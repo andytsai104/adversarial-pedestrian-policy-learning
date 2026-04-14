@@ -29,8 +29,12 @@
   },
 
   "cnn": {
+    "input_channels": 6, 
     "bev_feature_dim": 256,
+    "scalar_feature_dim": 7, 
     "hidden_dim": 384,
+    "state_feature_dim": 64,
+    "goal_feature_dim": 64,
     "direction_dim": 2
   },
 

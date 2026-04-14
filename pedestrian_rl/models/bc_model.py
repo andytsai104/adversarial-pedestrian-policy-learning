@@ -58,17 +58,25 @@ class BehaviorCloningPolicy(nn.Module):
         Softplus(): ensure speed output is always > 0
     '''
     sim_config = load_config("sim_config.json")
+    training_config = load_config("training_config.json")
     MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
-
+    INPUT_CHANNELS = training_config["cnn"]["input_channels"]
+    BEV_FEATURE_DIM = training_config["cnn"]["bev_feature_dim"]
+    HIDDEN_DIM = training_config["cnn"]["hidden_dim"]
+    DRIECTION_DIM = training_config["cnn"]["direction_dim"]
+    STATE_FEATURE_DIM = training_config["cnn"]["state_feature_dim"]
+    GOAL_FEATURE_DIM = training_config["cnn"]["goal_feature_dim"]
+    DROPOUT = training_config["bc"]["params"]["dropout"]
+    
     def __init__(
         self,
         cnn_encoder,
-        bev_feature_dim=128,
-        hidden_dim=256,
-        direction_dim=2,
-        dropout=0.10,
-        state_feature_dim=64,
-        goal_feature_dim=64,
+        bev_feature_dim=BEV_FEATURE_DIM,
+        hidden_dim=HIDDEN_DIM,
+        direction_dim=DRIECTION_DIM,
+        dropout=DROPOUT,
+        state_feature_dim=STATE_FEATURE_DIM,
+        goal_feature_dim=GOAL_FEATURE_DIM,
         max_speed=MAX_SPEED
     ):
         super().__init__()

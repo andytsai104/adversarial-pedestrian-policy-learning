@@ -176,12 +176,13 @@ def move_batch_to_device(batch, device):
 
 def build_model(config, device):
     """Build BC model."""
+    input_channels = config["cnn"]["input_channels"]
     bev_feature_dim = config["cnn"]["bev_feature_dim"]
     hidden_dim = config["cnn"]["hidden_dim"]
     direction_dim = config["cnn"]["direction_dim"]
     dropout = config["bc"]["params"]["dropout"]
 
-    cnn_encoder = CNNEncoder(input_channels=5, feature_dim=bev_feature_dim)
+    cnn_encoder = CNNEncoder(input_channels=input_channels, feature_dim=bev_feature_dim)
     model = BehaviorCloningPolicy(
         cnn_encoder=cnn_encoder,
         bev_feature_dim=bev_feature_dim,

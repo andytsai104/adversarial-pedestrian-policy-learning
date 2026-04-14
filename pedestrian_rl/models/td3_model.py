@@ -11,7 +11,31 @@ from .cnn_encoder import CNNEncoder
 from ..utils.config_loader import load_config
 
 sim_config = load_config("sim_config.json")
+training_config = load_config("training_config.json")
+
 MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
+
+# cnn params
+INPUT_CHANNELS = training_config["cnn"]["input_channels"]
+BEV_FEATURE_DIM = training_config["cnn"]["bev_feature_dim"]
+SCALAR_FEATURE_DIM = training_config["cnn"]["scalar_feature_dim"]
+HIDDEN_DIM = training_config["cnn"]["hidden_dim"]
+
+# td3 params
+TD3_PARAMS = training_config["td3"]["params"]
+ACTOR_LEARNING_RATE = TD3_PARAMS["actor_learning_rate"]
+CRITIC_LEARNING_RATE = TD3_PARAMS["critic_learning_rate"]
+ACTOR_WEIGHT_DECAY = TD3_PARAMS["actor_weight_decay"]
+CRITIC_WEIGHT_DECAY = TD3_PARAMS["critic_weight_decay"]
+GAMMA = TD3_PARAMS["gamma"]
+TAU = TD3_PARAMS["tau"]
+POLICY_NOISE = TD3_PARAMS["policy_noise"]
+NOISE_CLIP = TD3_PARAMS["noise_clip"]
+POLICY_DELAY = TD3_PARAMS["policy_delay"]
+EXPLORATION_SPEED_NOISE = TD3_PARAMS["exploration_speed_noise"]
+EXPLORATION_DIRECTION_NOISE = TD3_PARAMS["exploration_direction_noise"]
+REPLAY_CAPACITY = TD3_PARAMS["replay_capacity"]
+DROPOUT = TD3_PARAMS["dropout"]
 
 
 class Actor(nn.Module):
@@ -30,17 +54,14 @@ class Actor(nn.Module):
         action[:, 1:3]   : local direction [right, forward]
     '''
 
-    sim_config = load_config("sim_config.json")
-    MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
-
     def __init__(
         self,
         cnn_encoder,
-        bev_feature_dim=128,
-        scalar_feature_dim=7,
-        hidden_dim=256,
+        bev_feature_dim=BEV_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,
+        hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
-        dropout=0.10,
+        dropout=DROPOUT,
     ):
         super().__init__()
 
@@ -113,18 +134,15 @@ class CriticBranch(nn.Module):
         direction    -> unchanged local unit direction
     '''
 
-    sim_config = load_config("sim_config.json")
-    MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
-
     def __init__(
         self,
         cnn_encoder,
-        bev_feature_dim=128,
-        scalar_feature_dim=7,
+        bev_feature_dim=BEV_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,
         action_dim=3,
-        hidden_dim=256,
+        hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
-        dropout=0.10,
+        dropout=DROPOUT,
     ):
         super().__init__()
 
@@ -174,18 +192,15 @@ class CriticBranch(nn.Module):
 class TwinCritic(nn.Module):
     '''Twin critic used in TD3.'''
 
-    sim_config = load_config("sim_config.json")
-    MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
-
     def __init__(
         self,
-        input_channels=5,
-        bev_feature_dim=128,
-        scalar_feature_dim=7,
+        input_channels=INPUT_CHANNELS,
+        bev_feature_dim=BEV_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,
         action_dim=3,
-        hidden_dim=256,
+        hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
-        dropout=0.10,
+        dropout=DROPOUT,
     ):
         super().__init__()
 
@@ -290,30 +305,28 @@ class TD3Agent:
     Action format:
         [speed, dir_right, dir_forward]
     '''
-    sim_config = load_config("sim_config.json")
-    MAX_SPEED = sim_config["simulation"]["pedestrian"]["speed_range"][1]
 
     def __init__(
         self,
-        input_channels=5,
-        bev_feature_dim=128,
-        scalar_feature_dim=7,
-        hidden_dim=256,
+        input_channels=INPUT_CHANNELS,
+        bev_feature_dim=BEV_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,
+        hidden_dim=HIDDEN_DIM,
         action_dim=3,
         max_speed=MAX_SPEED,
-        actor_learning_rate=1e-4,
-        critic_learning_rate=1e-4,
-        actor_weight_decay=0.0,
-        critic_weight_decay=0.0,
-        gamma=0.99,
-        tau=0.005,
-        policy_noise=0.20,
-        noise_clip=0.50,
-        policy_delay=2,
-        exploration_speed_noise=0.15,
-        exploration_direction_noise=0.20,
-        replay_capacity=200000,
-        dropout=0.10,
+        actor_learning_rate=ACTOR_LEARNING_RATE,
+        critic_learning_rate=CRITIC_LEARNING_RATE,
+        actor_weight_decay=ACTOR_WEIGHT_DECAY,
+        critic_weight_decay=CRITIC_WEIGHT_DECAY,
+        gamma=GAMMA,
+        tau=TAU,
+        policy_noise=POLICY_NOISE,
+        noise_clip=NOISE_CLIP,
+        policy_delay=POLICY_DELAY,
+        exploration_speed_noise=EXPLORATION_SPEED_NOISE,
+        exploration_direction_noise=EXPLORATION_DIRECTION_NOISE,
+        replay_capacity=REPLAY_CAPACITY,
+        dropout=DROPOUT,
         device="cuda",
     ):
         self.device = torch.device(device if (device != "cuda" or torch.cuda.is_available()) else "cpu")

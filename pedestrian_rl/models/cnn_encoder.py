@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from ..utils.config_loader import load_config
 
 
 class ResidualBlock(nn.Module):
@@ -50,7 +51,12 @@ class CNNEncoder(nn.Module):
     Output:
         (B, feature_dim)
     """
-    def __init__(self, input_channels=5, feature_dim=128):
+    cnn_config = load_config("training_config.json")["cnn"]
+
+    def __init__(self, 
+                 input_channels=cnn_config["input_channels"], 
+                 feature_dim=cnn_config["bev_feature_dim"]
+                ):
         super().__init__()
 
         # stem: 160 -> 80

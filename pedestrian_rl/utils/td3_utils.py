@@ -709,9 +709,9 @@ def build_td3_agent(training_config, max_speed, device='cuda'):
     td3_params = training_config['td3']['params']
 
     agent = TD3Agent(
-        input_channels=5,
+        input_channels=cnn_cfg['input_channels'],
         bev_feature_dim=cnn_cfg['bev_feature_dim'],
-        scalar_feature_dim=7,
+        scalar_feature_dim=cnn_cfg['scalar_feature_dim'],
         hidden_dim=cnn_cfg['hidden_dim'],
         action_dim=3,
         max_speed=max_speed,

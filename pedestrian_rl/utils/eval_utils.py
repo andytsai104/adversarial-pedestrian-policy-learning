@@ -136,12 +136,13 @@ class PolicyRunner:
         dropout = 0.0
 
         if self.training_config is not None:
+            input_channels = self.training_config["cnn"]["input_channels"]
             bev_feature_dim = self.training_config["cnn"]["bev_feature_dim"]
             hidden_dim = self.training_config["cnn"]["hidden_dim"]
             direction_dim = self.training_config["cnn"]["direction_dim"]
             dropout = self.training_config["bc"]["params"]["dropout"]
 
-        cnn_encoder = CNNEncoder(input_channels=5, feature_dim=bev_feature_dim)
+        cnn_encoder = CNNEncoder(input_channels=input_channels, feature_dim=bev_feature_dim)
         self.model = self.model_class(
             cnn_encoder=cnn_encoder,
             bev_feature_dim=bev_feature_dim,

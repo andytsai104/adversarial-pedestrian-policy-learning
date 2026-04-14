@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 from .sim_utils import CrossroadPedestrians
 from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
+from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
 from ..data_collection.state_action_pair import PedestrianStateAction
 
 
@@ -108,7 +109,7 @@ class DataSampler:
                  bev_wrapper, 
                  crossroad_pedestrians: CrossroadPedestrians, 
                  config,
-                 bev_sample_class=BEVSample,
+                 bev_sample_class=SemanticBEVSample,
         ):
 
         self.world = world
@@ -153,17 +154,23 @@ class DataSampler:
         ped_dict = {ped.id: ped for ped in all_peds}
         return [ped_dict[pid] for pid in self.target_ped_ids if pid in ped_dict]
     
-    def sample_single_pedestrian(self, frame_id, timestamp, ped: carla.Walker):
+    def sample_single_pedestrian(self, ped: carla.Walker):
         bev_sample = self.bev_sample_class(actor=ped, bev_wrapper=self.bev_wrapper)
         controller = ped.get_control()
+        
+        # ----- states -----
+        # get_bev() would can tick() once -> sample time relavent information later
+        bev_data = bev_sample.get_bev()
+
+        snapshot = self.world.get_snapshot()
+        frame_id = snapshot.timestamp.frame
+        timestamp = snapshot.timestamp
+
         ped_info = PedestrianStateAction(
             target_ped=ped,
             frame_id=frame_id,
             timestamp=timestamp
         )
-
-        # ----- state -----
-        bev_data = bev_sample.get_bev()
 
         # current_carla_loc = ped.get_location()
         current_carla_loc = ped.get_transform().location

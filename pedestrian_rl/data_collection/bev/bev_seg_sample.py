@@ -97,6 +97,8 @@ class SemanticBEVWrapper:
         self.last_image = None
         self.last_tag_map = None
 
+        self.sensor_need_warmup = False
+
     def _build_sensor_bp(self):
         blueprint_library = self.world.get_blueprint_library()
         sensor_bp = blueprint_library.find("sensor.camera.semantic_segmentation")
@@ -144,6 +146,7 @@ class SemanticBEVWrapper:
             weak_queue.put(image)
 
         self.sensor.listen(_on_image)
+        self.sensor_need_warmup = True
 
     def destroy_sensor(self):
         if self.sensor is not None and self.sensor.is_alive:
@@ -196,7 +199,12 @@ class SemanticBEVWrapper:
 
     def _get_latest_image(self, timeout: float) -> carla.Image:
         self._ensure_sensor()
-
+        
+        # Tick if the sensor got initialized
+        if self.sensor_need_warmup:
+            self.world.tick()
+            self.sensor_need_warmup = False
+        
         image = None
         try:
             image = self.sensor_queue.get(timeout=timeout)
@@ -227,15 +235,12 @@ class SemanticBEVWrapper:
 
     def tag_map_to_layers(self, tag_map: np.ndarray):
         tags = self.TAGS
+        
+        sidewalk_ids = {tags["sidewalk"]}
+        road_line_ids = {tags["road_line"]}
 
-        sidewalk_ids = {
-            tags["sidewalk"],
-            tags["road_line"]
-        }
-
-        road_like_ids = {
+        road_ids = {
             tags["road"],
-            tags["road_line"],
             tags["ground"],
             tags["bridge"],
         }
@@ -275,9 +280,9 @@ class SemanticBEVWrapper:
         # }
 
         layers = {
-            "road": self._mask_from_ids(tag_map, road_like_ids),
-            # "sidewalk": self._mask_from_ids(tag_map, tags["sidewalk"]),
+            "road": self._mask_from_ids(tag_map, road_ids),
             "sidewalk": self._mask_from_ids(tag_map, sidewalk_ids),
+            "road_line": self._mask_from_ids(tag_map, road_line_ids),
             "vehicle": self._mask_from_ids(tag_map, vehicle_ids),
             "pedestrian": self._mask_from_ids(tag_map, tags["pedestrian"]),
             "obstacles": self._mask_from_ids(tag_map, blocked_ids),
@@ -287,7 +292,7 @@ class SemanticBEVWrapper:
         return layers
 
     def get_bev_data(self):
-        self.world.tick()
+        # self.world.tick()
         self.actor_list = self.world.get_actors()
         image = self._get_latest_image(timeout=20.0)
         tag_map = self.image_to_tag_map(image)
@@ -423,6 +428,7 @@ class SemanticBEVSample:
         self.feature_tensor = np.stack([
             layers["road"],
             layers["sidewalk"],
+            layers["road_line"],
             layers["vehicle"],
             layers["pedestrian"],
             layers["obstacles"],
@@ -446,6 +452,7 @@ class SemanticBEVSample:
         # image[layers["unknown"] > 0] = (0, 0, 0)
         image[layers["road"] > 0] = (70, 70, 70)
         image[layers["sidewalk"] > 0] = (200, 200, 200)
+        image[layers["road_line"] > 0] = (176, 211, 242)
         image[layers["obstacles"] > 0] = (0, 0, 0)
         image[layers["vehicle"] > 0] = (142, 0, 0)
         image[layers["pedestrian"] == 255] = (255, 150, 100)
@@ -498,9 +505,9 @@ def semantic_bev_test(world):
             cv2.imshow("Semantic BEV Debug Tool", bev_image)
 
             # The official segmantation visulization
-            # cityscapes_image = seg_sample.visualize_cityscapes()
-            # if cityscapes_image is not None:
-            #     cv2.imshow("Semantic Camera CityScapesPalette", cityscapes_image)
+            cityscapes_image = seg_sample.visualize_cityscapes()
+            if cityscapes_image is not None:
+                cv2.imshow("Semantic Camera CityScapesPalette", cityscapes_image)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break

@@ -161,9 +161,6 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                 continue
 
             # ----- sample current frame -----
-            snapshot = world.get_snapshot()
-            timestamp = snapshot.timestamp
-            frame_id = snapshot.timestamp.frame
 
             sample_peds = sampler.get_sample_pedestrians()
             num_sample_peds = len(sample_peds)
@@ -181,13 +178,12 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
             try:
                 ped_info, bev_sample = sampler.sample_single_pedestrian(
                     ped=sample_peds[ped_index],
-                    frame_id=frame_id,
-                    timestamp=timestamp
                 )
+                world.tick()
             except RuntimeError as exc:
                 respawn_same_episode(reason=exc)
                 continue
-
+            
             sampler.append_sample(ped_info)
             ped_index +=1
 
@@ -195,7 +191,7 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
             if (print_out_data) and (ped_index==1):
                 print(
                     f"\n[Ped Sample] "
-                    f"ped_id={ped_info.ped_id} | frame={frame_id}\n"
+                    f"ped_id={ped_info.ped_id} | frame={ped_info.state['frame_id']}\n"
                     f"  location         : {ped_info.state['current_location']}\n"
                     f"  velocity         : {ped_info.state['velocity']}\n"
                     # f"  speed            : {ped_info.state['speed']}\n"
