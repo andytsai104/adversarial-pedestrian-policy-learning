@@ -1,8 +1,8 @@
 {
   "bc":{
     "dataset_path": "datasets/pedestrian/segmentation_dataset.h5",
-    "media_dir": "media/bc/seg_bev/test",
-    "checkpoint_dir": "checkpoints/bc/seg_bev/test",
+    "media_dir": "media/bc/seg_bev",
+    "checkpoint_dir": "checkpoints/bc/seg_bev",
     "params": {
       "batch_size": 128,
       "num_epochs": 30,

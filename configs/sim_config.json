@@ -58,8 +58,8 @@
     "file_name": "segmentation_dataset.h5",
     "num_episode": 30,
     "num_ped_per_episode": 10,
-    "sample_every_n_steps": 0,
-    "min_samples_per_episode": 200, 
+    "sample_every_n_steps": 5,
+    "min_samples_per_episode": 400, 
     "format": "hdf5"
   }
 }

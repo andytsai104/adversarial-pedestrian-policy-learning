@@ -95,6 +95,7 @@ class SemanticBEVWrapper:
         self.sensor_tick = float(sensor_tick)
 
         self.last_image = None
+        self.last_frame = -1
         self.last_tag_map = None
 
         self.sensor_need_warmup = False
@@ -134,16 +135,19 @@ class SemanticBEVWrapper:
             attach_to=actor,
         )
 
-        weak_queue = self.sensor_queue
+        # weak_queue = self.sensor_queue
 
+        # def _on_image(image: carla.Image):
+        #     # Keep the newest frame only.
+        #     while not weak_queue.empty():
+        #         try:
+        #             weak_queue.get_nowait()
+        #         except queue.Empty:
+        #             break
+        #     weak_queue.put(image)
         def _on_image(image: carla.Image):
-            # Keep the newest frame only.
-            while not weak_queue.empty():
-                try:
-                    weak_queue.get_nowait()
-                except queue.Empty:
-                    break
-            weak_queue.put(image)
+            self.latest_image = image
+            self.latest_frame = image.frame
 
         self.sensor.listen(_on_image)
         self.sensor_need_warmup = True
@@ -154,7 +158,8 @@ class SemanticBEVWrapper:
             self.sensor.destroy()
 
         self.sensor = None
-        self.last_image = None
+        self.latest_image = None
+        self.latest_frame = -1
         self.last_tag_map = None
         while not self.sensor_queue.empty():
             try:
@@ -291,12 +296,30 @@ class SemanticBEVWrapper:
         }
         return layers
 
-    def get_bev_data(self):
+    # def get_bev_data(self):
         # self.world.tick()
+        # self.actor_list = self.world.get_actors()
+        # image = self._get_latest_image(timeout=20.0)
+        # tag_map = self.image_to_tag_map(image)
+        # self.last_tag_map = tag_map
+        # layers = self.tag_map_to_layers(tag_map)
+        # if self.hybrid:
+        #     layers["pedestrian"] = self.draw_actor_layers("walker")
+
+        # return layers
+
+    def get_bev_data(self):
+        self._ensure_sensor()
+
+        if self.latest_image is None:
+            raise RuntimeError("No semantic image received yet for this pedestrian")
+
         self.actor_list = self.world.get_actors()
-        image = self._get_latest_image(timeout=20.0)
+        image = self.latest_image
         tag_map = self.image_to_tag_map(image)
+        self.last_image = image
         self.last_tag_map = tag_map
+
         layers = self.tag_map_to_layers(tag_map)
         if self.hybrid:
             layers["pedestrian"] = self.draw_actor_layers("walker")
@@ -422,7 +445,13 @@ class SemanticBEVSample:
         self.feature_tensor = None
 
     def get_bev(self):
-        self.wrapper.set_hero_actor(self.actor)
+        if self.wrapper.hero_actor is None:
+            self.wrapper.attach_to_actor(self.actor)
+        elif self.wrapper.hero_actor.id != self.actor.id:
+            raise RuntimeError(
+                f"Wrapper attached to ped {self.wrapper.hero_actor.id}, "
+                f"but asked to sample ped {self.actor.id}")
+        
         layers = self.wrapper.get_bev_data()
 
         self.feature_tensor = np.stack([
