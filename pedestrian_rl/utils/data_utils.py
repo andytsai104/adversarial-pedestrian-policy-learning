@@ -114,6 +114,7 @@ class DataSampler:
 
         self.world = world
         self.bev_wrapper = bev_wrapper
+        self.ped_wrappers = {}
         self.crossroad_pedestrians = crossroad_pedestrians
         self.config = config
         self.bev_sample_class = bev_sample_class
@@ -155,7 +156,13 @@ class DataSampler:
         return [ped_dict[pid] for pid in self.target_ped_ids if pid in ped_dict]
     
     def sample_single_pedestrian(self, ped: carla.Walker):
-        bev_sample = self.bev_sample_class(actor=ped, bev_wrapper=self.bev_wrapper)
+        if ped.id not in self.ped_wrappers:
+            raise RuntimeError(f"No semantic wrapper found for ped {ped.id}")
+
+        bev_sample = self.bev_sample_class(
+            actor=ped,
+            bev_wrapper=self.ped_wrappers[ped.id]
+        )
         controller = ped.get_control()
         
         # ----- states -----
@@ -232,6 +239,22 @@ class DataSampler:
         )
 
         return ped_info, bev_sample
+    
+    def attach_target_wrappers(self):
+        self.close_target_wrappers()
+
+        sample_peds = self.get_sample_pedestrians()
+
+        # Save individual bev_wrapper to each targeted sampling pedestrian
+        for ped in sample_peds:
+            wrapper = self.bev_wrapper.__class__(cfg=None, world=self.world)
+            wrapper.attach_to_actor(ped)
+            self.ped_wrappers[ped.id] = wrapper
+
+    def close_target_wrappers(self):
+        for wrapper in self.ped_wrappers.values():
+            wrapper.close()
+        self.ped_wrappers = {}
 
 
     

@@ -21,6 +21,7 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
     min_samples_per_episode = config["dataset"]["min_samples_per_episode"]
     sim_config = config["simulation"]
     fixed_delta_time = sim_config["fixed_delta_seconds"]
+    warmup_ticks = sim_config["warmup_ticks"]
 
 
     client = carla.Client("localhost", 2000)
@@ -88,17 +89,20 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
         crossroad_pedestrians=crossroad_pedestrians,
     )
     sampler.select_target_ped_ids()
+    sampler.attach_target_wrappers()
+
+    for _ in range(warmup_ticks):
+        world.tick()
 
     def respawn_same_episode(reason):
-        nonlocal ped_index
         print(f"--- RESAMPLE SAME EPISODE: {reason} ---")
         print("Discarding current episode buffer and respawning actors...")
 
         refresh_conditions["start time"] = world.get_snapshot().timestamp.elapsed_seconds
         refresh_conditions["vehicle"]["stuck_tracker"] = {}
 
+        sampler.close_target_wrappers()
         sampler.reset_episode_tracking()
-        ped_index = None
 
         spawn_actors(
             world=world,
@@ -107,17 +111,21 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
             crossroad_pedestrians=crossroad_pedestrians,
         )
         sampler.select_target_ped_ids()
+        sampler.attach_target_wrappers()
+
+        for _ in range(warmup_ticks):
+            world.tick()
 
     try:
-        ped_index = None
+        sim_step = 0
         while True:
+            world.tick()
+            sim_step+=1
+
             if episode_idx == num_episode:
                 print(f"\nSampling finished: collected {episode_idx} episodes.")
                 print(f"Dataset saved to: {output_path}")
                 break
-
-            for _ in range(sample_every_n_steps):
-                world.tick()
 
             # ----- refresh episode if needed -----
             sim_state, should_refresh = refresh_sim(
@@ -148,6 +156,7 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                 refresh_conditions["start time"] = world.get_snapshot().timestamp.elapsed_seconds
                 refresh_conditions["vehicle"]["stuck_tracker"] = {}
 
+                sampler.close_target_wrappers()
                 sampler.reset_episode_tracking()
 
                 spawn_actors(
@@ -158,6 +167,12 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                 )
 
                 sampler.select_target_ped_ids()
+                sampler.attach_target_wrappers()
+                for _ in range(warmup_ticks):
+                    world.tick()
+                continue
+            
+            if sim_step % sample_every_n_steps != 0:
                 continue
 
             # ----- sample current frame -----
@@ -170,28 +185,23 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                 respawn_same_episode(reason=f"target pedestrian missing ({num_sample_peds}/{num_ped_per_episode} alive)")
                 continue
             
-            # Sample only one pedestrian per tick
-            if (ped_index is None) or (ped_index >= num_sample_peds):
-                ped_index = 0
 
             # Try to sample the bev if the pedestrian is alive; or resample the current episode
             try:
-                ped_info, bev_sample = sampler.sample_single_pedestrian(
-                    ped=sample_peds[ped_index],
-                )
-                world.tick()
+                for ped in sample_peds:
+                    ped_info, bev_sample = sampler.sample_single_pedestrian(ped=ped)
+                    sampler.append_sample(ped_info)
             except RuntimeError as exc:
                 respawn_same_episode(reason=exc)
                 continue
             
-            sampler.append_sample(ped_info)
-            ped_index +=1
+            frame_id = ped_info.state_action_pair["frame_id"]
 
             # Visualize the last pedestrian
-            if (print_out_data) and (ped_index==1):
+            if (print_out_data):
                 print(
                     f"\n[Ped Sample] "
-                    f"ped_id={ped_info.ped_id} | frame={ped_info.state['frame_id']}\n"
+                    f"ped_id={ped_info.ped_id} | frame={frame_id}\n"
                     f"  location         : {ped_info.state['current_location']}\n"
                     f"  velocity         : {ped_info.state['velocity']}\n"
                     # f"  speed            : {ped_info.state['speed']}\n"
@@ -201,7 +211,7 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                     f"  target_direction : {ped_info.action['target_direction']}\n"
                 )
 
-            if (show_bev) and (ped_index==1):
+            if (show_bev):
                 try: 
                     image = bev_sample.visualize_bev()
                 except RuntimeError as exc:
@@ -211,7 +221,7 @@ def data_sampling_sim(output_file=True, no_rendering_mode=True, show_bev=False, 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     return
     finally:
-        bev_wrapper.close()
+        sampler.close_target_wrappers()
         cv2.destroyAllWindows()
         
 
