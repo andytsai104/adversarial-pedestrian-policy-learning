@@ -8,75 +8,75 @@
     ],
     "per_seed": {
         "seed_1": {
-            "loss_total": 0.14210205916717905,
-            "loss_speed": 0.046729056084507094,
-            "loss_direction": 0.04768650153215192,
-            "speed_mae": 0.10023003859762156,
-            "direction_angle_deg": 8.410202130185768,
-            "speed_accuracy": 0.8939481268011528,
-            "direction_accuracy": 0.8606723224738833,
-            "joint_accuracy": 0.8046109510086455
+            "loss_total": 0.13337227363344722,
+            "loss_speed": 0.022603478901616233,
+            "loss_direction": 0.03692293171624206,
+            "speed_mae": 0.05466763733878849,
+            "direction_angle_deg": 5.813008721043745,
+            "speed_accuracy": 0.9555118112113532,
+            "direction_accuracy": 0.9225007019643708,
+            "joint_accuracy": 0.9009842521562351
         },
         "seed_2": {
-            "loss_total": 0.14894500064498528,
-            "loss_speed": 0.05116659442041846,
-            "loss_direction": 0.04888920396284914,
-            "speed_mae": 0.10791718758191773,
-            "direction_angle_deg": 8.476177137969893,
-            "speed_accuracy": 0.8737752161383285,
-            "direction_accuracy": 0.8682379642893326,
-            "joint_accuracy": 0.7948126801152737
+            "loss_total": 0.1315933034821289,
+            "loss_speed": 0.022835416263189374,
+            "loss_direction": 0.03625262915780108,
+            "speed_mae": 0.06346786611779469,
+            "direction_angle_deg": 5.850764048193383,
+            "speed_accuracy": 0.9421259844396996,
+            "direction_accuracy": 0.9168878795593742,
+            "joint_accuracy": 0.89192913423373
         },
         "seed_3": {
-            "loss_total": 0.13968304999867825,
-            "loss_speed": 0.03948086421518729,
-            "loss_direction": 0.05010109231571609,
-            "speed_mae": 0.09293157366192993,
-            "direction_angle_deg": 8.535367345947353,
-            "speed_accuracy": 0.8922190201729107,
-            "direction_accuracy": 0.8534261434153796,
-            "joint_accuracy": 0.805763688760807
+            "loss_total": 0.12774853804625394,
+            "loss_speed": 0.021079166345738285,
+            "loss_direction": 0.03555645722507198,
+            "speed_mae": 0.058713838898056134,
+            "direction_angle_deg": 5.997631822045394,
+            "speed_accuracy": 0.9521653545184399,
+            "direction_accuracy": 0.9189983968659649,
+            "joint_accuracy": 0.8980314962507233
         },
         "seed_4": {
-            "loss_total": 0.16747692711879458,
-            "loss_speed": 0.07781204959315245,
-            "loss_direction": 0.04483243911495226,
-            "speed_mae": 0.14182445788675496,
-            "direction_angle_deg": 8.045604636311875,
-            "speed_accuracy": 0.8103746397694525,
-            "direction_accuracy": 0.8746363878937208,
-            "joint_accuracy": 0.7544668587896254
+            "loss_total": 0.13215396962766573,
+            "loss_speed": 0.02154981505536423,
+            "loss_direction": 0.03686805092619629,
+            "speed_mae": 0.056313580955107384,
+            "direction_angle_deg": 5.929586963203009,
+            "speed_accuracy": 0.951968504124739,
+            "direction_accuracy": 0.9240159883273869,
+            "joint_accuracy": 0.9023622049121406
         },
         "seed_5": {
-            "loss_total": 0.13710505525482233,
-            "loss_speed": 0.04423784907556324,
-            "loss_direction": 0.04643360376753073,
-            "speed_mae": 0.09377794128866807,
-            "direction_angle_deg": 7.973331885860015,
-            "speed_accuracy": 0.8887608069164266,
-            "direction_accuracy": 0.8670592514170006,
-            "joint_accuracy": 0.8155619596541787
+            "loss_total": 0.14303459433002735,
+            "loss_speed": 0.022991681540399555,
+            "loss_direction": 0.040014304880668795,
+            "speed_mae": 0.06390662710732363,
+            "direction_angle_deg": 6.383963494038019,
+            "speed_accuracy": 0.9415354332585973,
+            "direction_accuracy": 0.9178528342660018,
+            "joint_accuracy": 0.888188976565684
         }
     },
     "mean": {
-        "loss_total": 0.14706240594387054,
-        "loss_speed": 0.05188528448343277,
-        "loss_direction": 0.047588568180799484,
-        "speed_mae": 0.10733623802661896,
-        "direction_angle_deg": 8.28813648223877,
-        "speed_accuracy": 0.8718155026435852,
-        "direction_accuracy": 0.8648063540458679,
-        "joint_accuracy": 0.7950432300567627
+        "loss_total": 0.1335805356502533,
+        "loss_speed": 0.022211911156773567,
+        "loss_direction": 0.037122875452041626,
+        "speed_mae": 0.059413909912109375,
+        "direction_angle_deg": 5.994990348815918,
+        "speed_accuracy": 0.9486614465713501,
+        "direction_accuracy": 0.9200512170791626,
+        "joint_accuracy": 0.8962991833686829
     },
     "std": {
-        "loss_total": 0.010940797626972198,
-        "loss_speed": 0.013502988032996655,
-        "loss_direction": 0.0018408815376460552,
-        "speed_mae": 0.01806429773569107,
-        "direction_angle_deg": 0.23208008706569672,
-        "speed_accuracy": 0.03153449669480324,
-        "direction_accuracy": 0.007212223019450903,
-        "joint_accuracy": 0.021325966343283653
+        "loss_total": 0.005087612196803093,
+        "loss_speed": 0.0007578401709906757,
+        "loss_direction": 0.0015281535452231765,
+        "speed_mae": 0.003721513319760561,
+        "direction_angle_deg": 0.20469646155834198,
+        "speed_accuracy": 0.005720736924558878,
+        "direction_accuracy": 0.002744727535173297,
+        "joint_accuracy": 0.005414497572928667
     },
     "split_seed": 42,
     "split_info": {
@@ -122,9 +122,9 @@
             "num_test": 3
         },
         "sample": {
-            "num_train": 14433,
-            "num_val": 2456,
-            "num_test": 1735
+            "num_train": 32640,
+            "num_val": 5240,
+            "num_test": 5080
         }
     }
 }
