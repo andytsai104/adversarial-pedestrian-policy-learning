@@ -1,8 +1,8 @@
 {
   "bc":{
     "dataset_path": "/scratch/ctsai67/datasets/pedestrian/segmentation_dataset.h5",
-    "media_dir": "media/bc/seg_bev/test4",
-    "checkpoint_dir": "checkpoints/bc/seg_bev/test4",
+    "media_dir": "media/bc/seg_bev/test5",
+    "checkpoint_dir": "checkpoints/bc/seg_bev/test5",
     "params": {
       "batch_size": 128,
       "num_epochs": 20,
