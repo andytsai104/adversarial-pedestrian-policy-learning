@@ -1,7 +1,7 @@
 import os
 import cv2
 from ..utils.config_loader import load_config
-from ..utils.eval_utils import PolicyRunner
+from ..utils.policy_runners.bc_policy_runner import PolicyRunner
 from ..models.bc_model import BehaviorCloningPolicy
 
 
@@ -32,7 +32,7 @@ def main():
         model_class=BehaviorCloningPolicy,
         model_name=model_name,
         checkpoint_path=checkpoint_path,
-        num_model_peds=1
+        num_model_peds=1,
     )
 
     try:
