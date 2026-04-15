@@ -5,7 +5,7 @@
     "checkpoint_dir": "checkpoints/bc/seg_bev",
     "params": {
       "batch_size": 128,
-      "num_epochs": 30,
+      "num_epochs": 20,
       "learning_rate": 0.0001,
       "num_workers": 8,
       "val_size": 0.15,
@@ -17,14 +17,14 @@
       "weight_decay": 0.0001,
       "grad_clip_norm": 1.0,
       "speed_loss_weight": 1.0,
-      "direction_loss_weight": 2.0,
+      "direction_loss_weight": 3.0,
       "speed_tolerance": 0.2,
       "direction_tolerance_deg": 15.0,
       "goal_scale": 100.0,
       "clip_bound": 3.0, 
       "future_steps": 2,
       "direction_valid_speed_eps": 0.05,
-      "dropout": 0.05
+      "dropout": 0.10
     }
   },
 
