@@ -4,7 +4,7 @@
 #SBATCH -q class
 #SBATCH -n 1
 #SBATCH -c 8
-#SBATCH -t 0-02:20:00
+#SBATCH -t 0-03:30:00
 #SBATCH --mem=20G
 #SBATCH -o outputs/out/pedestrian_RL/bc_training_%j.out
 #SBATCH -e outputs/err/pedestrian_RL/bc_training_%j.err
