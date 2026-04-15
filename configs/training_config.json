@@ -1,8 +1,8 @@
 {
   "bc":{
     "dataset_path": "/scratch/ctsai67/datasets/pedestrian/segmentation_dataset.h5",
-    "media_dir": "media/bc/seg_bev/test5",
-    "checkpoint_dir": "checkpoints/bc/seg_bev/test5",
+    "media_dir": "media/bc/seg_bev/test3",
+    "checkpoint_dir": "checkpoints/bc/seg_bev/test3",
     "params": {
       "batch_size": 128,
       "num_epochs": 20,
@@ -39,12 +39,12 @@
   },
 
   "td3": {
-    "media_dir": "media/td3",
-    "checkpoint_dir": "checkpoints/td3",
+    "media_dir": "media/td3/test2",
+    "checkpoint_dir": "checkpoints/td3/test2",
     "params": {
       "num_episodes": 100,
       "batch_size": 128,
-      "start_steps": 2000,
+      "start_steps": 5000,
       "updates_per_step": 1,
       "save_every": 25,
       "replay_capacity": 200000,
@@ -59,9 +59,10 @@
       "policy_delay": 2,
       "exploration_speed_noise": 0.15,
       "exploration_direction_noise": 0.2,
-      "goal_scale": 48.0,
+      "goal_scale": 100.0,
       "clip_bound": 3.0,
       "num_background_pedestrians": 39,
+      "num_model_peds": 1,
       "stall_speed_threshold": 0.05,
       "goal_reached_threshold": 1.5,
       "episode_smooth_window": 10,

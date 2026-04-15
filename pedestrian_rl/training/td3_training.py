@@ -1,4 +1,4 @@
-from ..utils.td3_utils import PedestrianRLEnv, TD3Trainer, build_td3_agent
+from pedestrian_rl.utils.td3_utils import PedestrianRLEnv, TD3Trainer, build_td3_agent
 from ..utils.config_loader import load_config
 
 
@@ -9,7 +9,7 @@ def train_td3():
     env = PedestrianRLEnv(
         sim_config_name='sim_config.json',
         training_config_name='training_config.json',
-        no_rendering_mode=True,
+        no_rendering_mode=False,
         render_bev=False,
         device='cuda',
     )

@@ -1,0 +1,10 @@
+{
+    "loss_total": 0.10956569463894593,
+    "loss_speed": 0.03343790256616285,
+    "loss_direction": 0.030451117226978634,
+    "speed_mae": 0.06456777058013781,
+    "direction_angle_deg": 5.202788970601841,
+    "speed_accuracy": 0.9438976379830067,
+    "direction_accuracy": 0.9304084732776552,
+    "joint_accuracy": 0.9000000001877312
+}

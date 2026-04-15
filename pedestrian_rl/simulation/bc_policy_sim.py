@@ -24,6 +24,8 @@ def main():
 
 
     checkpoint_name = "best_model.pt"
+    # best_seed = "seed_3"
+    # checkpoint_root_dir = "checkpoints/bc/seg_bev/test3"
     checkpoint_seed_dir = os.path.join(best_seed)
     checkpoint_path = os.path.join(checkpoint_root_dir, checkpoint_seed_dir, checkpoint_name)
 

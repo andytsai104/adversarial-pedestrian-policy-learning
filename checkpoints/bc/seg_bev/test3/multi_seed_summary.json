@@ -1,0 +1,130 @@
+{
+    "seeds": [
+        1,
+        2,
+        3,
+        4,
+        5
+    ],
+    "per_seed": {
+        "seed_1": {
+            "loss_total": 0.10956569463894593,
+            "loss_speed": 0.03343790256616285,
+            "loss_direction": 0.030451117226978634,
+            "speed_mae": 0.06456777058013781,
+            "direction_angle_deg": 5.202788970601841,
+            "speed_accuracy": 0.9438976379830067,
+            "direction_accuracy": 0.9304084732776552,
+            "joint_accuracy": 0.9000000001877312
+        },
+        "seed_2": {
+            "loss_total": 0.09188630264399089,
+            "loss_speed": 0.020838779769104532,
+            "loss_direction": 0.02841900959427608,
+            "speed_mae": 0.05353180892237528,
+            "direction_angle_deg": 4.823439144525002,
+            "speed_accuracy": 0.9549212600302508,
+            "direction_accuracy": 0.9287114240991787,
+            "joint_accuracy": 0.9064960631798572
+        },
+        "seed_3": {
+            "loss_total": 0.09289611889797403,
+            "loss_speed": 0.020560606021991397,
+            "loss_direction": 0.028934204715348077,
+            "speed_mae": 0.05304098532894465,
+            "direction_angle_deg": 4.875977937630781,
+            "speed_accuracy": 0.9511811025499359,
+            "direction_accuracy": 0.9333255527526375,
+            "joint_accuracy": 0.909448819085369
+        },
+        "seed_4": {
+            "loss_total": 0.09105753756355582,
+            "loss_speed": 0.02160132382959714,
+            "loss_direction": 0.027782485294925767,
+            "speed_mae": 0.052897514977793055,
+            "direction_angle_deg": 4.843081869666032,
+            "speed_accuracy": 0.9561023623924556,
+            "direction_accuracy": 0.9301733272282158,
+            "joint_accuracy": 0.9090551182979674
+        },
+        "seed_5": {
+            "loss_total": 0.09828135504086656,
+            "loss_speed": 0.023726566908807735,
+            "loss_direction": 0.029821915866066445,
+            "speed_mae": 0.06177058407640833,
+            "direction_angle_deg": 4.781447659890483,
+            "speed_accuracy": 0.9421259844396996,
+            "direction_accuracy": 0.9321082933681217,
+            "joint_accuracy": 0.8996062994003295
+        }
+    },
+    "mean": {
+        "loss_total": 0.09673739969730377,
+        "loss_speed": 0.024033036082983017,
+        "loss_direction": 0.02908174693584442,
+        "speed_mae": 0.05716172978281975,
+        "direction_angle_deg": 4.9053473472595215,
+        "speed_accuracy": 0.9496456980705261,
+        "direction_accuracy": 0.9309453964233398,
+        "joint_accuracy": 0.9049212336540222
+    },
+    "std": {
+        "loss_total": 0.006892000790685415,
+        "loss_speed": 0.0048315576277673244,
+        "loss_direction": 0.0009562525083310902,
+        "speed_mae": 0.004988612607121468,
+        "direction_angle_deg": 0.151836097240448,
+        "speed_accuracy": 0.00568266911432147,
+        "direction_accuracy": 0.0016057626344263554,
+        "joint_accuracy": 0.004301983863115311
+    },
+    "split_seed": 42,
+    "split_info": {
+        "episode": {
+            "train": [
+                "episode_001",
+                "episode_002",
+                "episode_004",
+                "episode_005",
+                "episode_006",
+                "episode_009",
+                "episode_010",
+                "episode_011",
+                "episode_012",
+                "episode_013",
+                "episode_014",
+                "episode_015",
+                "episode_016",
+                "episode_017",
+                "episode_018",
+                "episode_019",
+                "episode_021",
+                "episode_022",
+                "episode_025",
+                "episode_026",
+                "episode_027",
+                "episode_028",
+                "episode_029"
+            ],
+            "val": [
+                "episode_007",
+                "episode_008",
+                "episode_023",
+                "episode_024"
+            ],
+            "test": [
+                "episode_000",
+                "episode_003",
+                "episode_020"
+            ],
+            "num_train": 23,
+            "num_val": 4,
+            "num_test": 3
+        },
+        "sample": {
+            "num_train": 32640,
+            "num_val": 5240,
+            "num_test": 5080
+        }
+    }
+}

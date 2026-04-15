@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
+from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
 from .data_utils import rotate_local_to_world_2d, rotate_world_to_local_2d
 from ..models.td3_model import TD3Agent
 from .config_loader import load_config
@@ -21,20 +22,37 @@ from .sim_utils import (
 )
 
 # --- Environment for TD3 to train in ---
+import json
+import math
+import os
+import random
+import weakref
+from matplotlib import pyplot as plt
+import carla
+import cv2
+import numpy as np
+
+from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
+from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
+from .data_utils import rotate_local_to_world_2d, rotate_world_to_local_2d
+from ..models.td3_model import TD3Agent
+from .config_loader import load_config
+from .sim_utils import (
+    AggressiveVehicles,
+    CrossroadPedestrians,
+    Spector,
+    cleanup_simulation,
+    refresh_sim,
+)
+
+
 class PedestrianRLEnv:
     '''
-    RL environment for one TD3-controlled pedestrian in CARLA.
-
-    Observation matches the BC policy input style:
-        bev_data
-        velocity_local
-        speed
-        yaw_sin
-        yaw_cos
-        goal_rel_local
-
-    Action format:
-        [target_speed, dir_right, dir_forward]
+    Multi-pedestrian TD3 environment with one shared policy.
+    Each controlled pedestrian has:
+        - its own semantic wrapper
+        - its own collision sensor
+        - its own previous-state tracking
     '''
 
     def __init__(
@@ -44,8 +62,9 @@ class PedestrianRLEnv:
         no_rendering_mode=True,
         render_bev=False,
         device="cuda",
+        bev_wrapper_class=SemanticBEVWrapper,
+        bev_sample_class=SemanticBEVSample
     ):
-        # ----- load config -----
         self.sim_config = load_config(sim_config_name)
         self.training_config = load_config(training_config_name)
 
@@ -60,6 +79,7 @@ class PedestrianRLEnv:
 
         self.goal_scale = float(td3_params["goal_scale"])
         self.num_background_pedestrians = int(td3_params["num_background_pedestrians"])
+        self.num_model_peds = int(td3_params.get("num_model_peds", 1))
         self.stall_speed_threshold = float(td3_params["stall_speed_threshold"])
         self.goal_reached_threshold = float(td3_params["goal_reached_threshold"])
         self.clip_bound = float(td3_params["clip_bound"])
@@ -68,7 +88,6 @@ class PedestrianRLEnv:
 
         self.reward_weight = td3_cfg["reward"]
 
-        # ----- connect to CARLA -----
         self.client = carla.Client("localhost", 2000)
         self.client.set_timeout(10.0)
         self.world = self.client.get_world()
@@ -80,7 +99,6 @@ class PedestrianRLEnv:
         settings.no_rendering_mode = no_rendering_mode
         self.world.apply_settings(settings)
 
-        # ----- setup scenario -----
         self.intersection_position = carla.Location(
             x=sim_cfg["intersection"]["x"],
             y=sim_cfg["intersection"]["y"],
@@ -102,7 +120,9 @@ class PedestrianRLEnv:
             self.world,
             location=self.intersection_position,
         )
-        self.bev_wrapper = BEVWrapper(cfg=None, world=self.world)
+
+        self.bev_wrapper_class = bev_wrapper_class
+        self.bev_sample_class = bev_sample_class
 
         stuck_detection_cfg = sim_cfg["stuck_detection"]
         self.refresh_conditions = {
@@ -120,96 +140,116 @@ class PedestrianRLEnv:
             },
         }
 
-        # ----- reset-able buffers -----
-        self.target_ped = None
-        self.target_goal = None
-        self.prev_location = None
-        self.prev_frame_id = None
-        self.prev_goal_distance = None
-        self.prev_min_vehicle_distance = None
+        # ---- per-ped buffers ----
+        self.target_peds = {}
+        self.target_goals = {}
+        self.active_ped_ids = []
+
+        self.ped_wrappers = {}
+        self.collision_sensors = {}
+        self.last_collisions = {}
+        self.last_bev_samples = {}
+
+        self.prev_locations = {}
+        self.prev_frame_ids = {}
+        self.prev_goal_distances = {}
+        self.prev_min_vehicle_distances = {}
+
         self.episode_step = 0
-        self.last_collision = False
-        self.last_bev_sample = None
-        self.last_obs = None
-        self.collision_sensor = None
+        self.last_obs = {}
 
-    def attach_collision_sensor(self):
-        '''Attach one collision sensor to the target pedestrian.'''
-        blueprint = self.world.get_blueprint_library().find("sensor.other.collision")
-        self.collision_sensor = self.world.spawn_actor(
-            blueprint,
-            carla.Transform(),
-            attach_to=self.target_ped,
-        )
+    def close_target_wrappers(self):
+        for wrapper in self.ped_wrappers.values():
+            wrapper.close()
+        self.ped_wrappers = {}
 
-        weak_self = weakref.ref(self)
-        self.collision_sensor.listen(
-            lambda event: PedestrianRLEnv.on_collision(weak_self, event)
-        )
+    def attach_target_wrappers(self):
+        self.close_target_wrappers()
+        for ped_id, ped in self.target_peds.items():
+            wrapper = self.bev_wrapper_class(cfg=None, world=self.world)
+            wrapper.attach_to_actor(ped)
+            self.ped_wrappers[ped_id] = wrapper
 
     @staticmethod
-    def on_collision(weak_self, event):
-        '''Collision callback: only count vehicle collisions.'''
+    def on_collision(weak_self, ped_id, event):
         self = weak_self()
         if self is None:
             return
 
         if event.other_actor is not None and "vehicle." in event.other_actor.type_id:
-            self.last_collision = True
+            self.last_collisions[ped_id] = True
 
-    def destroy_collision_sensor(self):
-        '''Destroy collision sensor safely.'''
-        if self.collision_sensor is not None and self.collision_sensor.is_alive:
-            self.collision_sensor.destroy()
-        self.collision_sensor = None
+    def destroy_collision_sensors(self):
+        for sensor in self.collision_sensors.values():
+            if sensor is not None and sensor.is_alive:
+                sensor.destroy()
+        self.collision_sensors = {}
+
+    def attach_collision_sensors(self):
+        self.destroy_collision_sensors()
+
+        weak_self = weakref.ref(self)
+        blueprint = self.world.get_blueprint_library().find("sensor.other.collision")
+
+        for ped_id, ped in self.target_peds.items():
+            sensor = self.world.spawn_actor(
+                blueprint,
+                carla.Transform(),
+                attach_to=ped,
+            )
+            sensor.listen(
+                lambda event, pid=ped_id: PedestrianRLEnv.on_collision(weak_self, pid, event)
+            )
+            self.collision_sensors[ped_id] = sensor
 
     def close(self):
-        '''Close environment resources.'''
-        self.destroy_collision_sensor()
+        self.destroy_collision_sensors()
+        self.close_target_wrappers()
         cv2.destroyAllWindows()
 
     @staticmethod
     def normalize_direction(direction_local, eps=1e-6):
-        '''Normalize local-frame 2D direction vectors.'''
         norm = float(np.linalg.norm(direction_local))
         if norm < eps:
             return np.array([0.0, 1.0], dtype=np.float32)
         return (direction_local / norm).astype(np.float32)
 
-    def compute_velocity_speed(self, ped, frame_id):
-        '''Compute current location, velocity, and speed.'''
-        loc = ped.get_location()
-        current_location = np.array([loc.x, loc.y, loc.z], dtype=np.float32)
+    def compute_velocity_speed(self, ped_id, ped, frame_id):
+        current_loc = ped.get_location()
+        current_location = np.array([current_loc.x, current_loc.y, current_loc.z], dtype=np.float32)
 
-        if self.prev_location is None or self.prev_frame_id is None:
+        prev_location = self.prev_locations.get(ped_id, None)
+        prev_frame_id = self.prev_frame_ids.get(ped_id, None)
+
+        if prev_location is None or prev_frame_id is None:
             velocity = np.zeros(3, dtype=np.float32)
         else:
-            passed_frames = frame_id - self.prev_frame_id
+            passed_frames = frame_id - prev_frame_id
             dt = passed_frames * self.fixed_delta_seconds
             if dt > 0:
-                velocity = (current_location - self.prev_location) / dt
+                velocity = (current_location - prev_location) / dt
             else:
                 velocity = np.zeros(3, dtype=np.float32)
 
         speed = float(np.linalg.norm(velocity[:2]))
+
+        self.prev_locations[ped_id] = current_location.copy()
+        self.prev_frame_ids[ped_id] = frame_id
         return current_location, velocity, speed
 
-    def get_goal_distance(self, current_location):
-        '''Get target pedestrian distance to the goal.'''
-        if self.target_goal is None:
+    def get_goal_distance(self, ped_id, current_location):
+        goal = self.target_goals.get(ped_id, None)
+        if goal is None:
             return 0.0
-        return float(np.linalg.norm(self.target_goal[:2] - current_location[:2]))
+        return float(np.linalg.norm(goal[:2] - current_location[:2]))
 
     def get_min_vehicle_distance(self, ped_location):
-        '''Get minimum distance between target pedestrian and all vehicles.'''
         vehicles = [veh for veh in self.world.get_actors().filter("vehicle.*") if veh.is_alive]
         if len(vehicles) == 0:
             return 999.0
-
         return float(min(veh.get_location().distance(ped_location) for veh in vehicles))
 
     def is_on_driving_lane(self, ped_location):
-        '''Check if pedestrian is on drivable lane.'''
         wp = self.world_map.get_waypoint(
             ped_location,
             project_to_road=False,
@@ -217,16 +257,22 @@ class PedestrianRLEnv:
         )
         return bool(wp is not None and wp.lane_type == carla.LaneType.Driving)
 
-    def build_observation(self):
-        '''Build one RL observation from current CARLA state.'''
-        frame_id = self.world.get_snapshot().timestamp.frame
-        self.last_bev_sample = BEVSample(actor=self.target_ped, bev_wrapper=self.bev_wrapper)
-        bev_data = self.last_bev_sample.get_bev().astype(np.float32)
+    def build_observation(self, ped_id, ped, frame_id):
+        if ped_id not in self.ped_wrappers:
+            raise RuntimeError(f"No semantic wrapper found for ped {ped_id}")
 
-        current_location, velocity, speed = self.compute_velocity_speed(self.target_ped, frame_id)
-        yaw_heading = math.radians(self.target_ped.get_transform().rotation.yaw)
+        bev_sample = self.bev_sample_class(
+            actor=ped,
+            bev_wrapper=self.ped_wrappers[ped_id]
+        )
+        bev_data = bev_sample.get_bev().astype(np.float32)
+        self.last_bev_samples[ped_id] = bev_sample
 
-        goal_rel_world = self.target_goal - current_location
+        current_location, velocity, speed = self.compute_velocity_speed(ped_id, ped, frame_id)
+        yaw_heading = math.radians(ped.get_transform().rotation.yaw)
+
+        goal = self.target_goals.get(ped_id, current_location.copy())
+        goal_rel_world = goal - current_location
         velocity_local = rotate_world_to_local_2d(velocity[:2], yaw_heading).astype(np.float32)
         goal_rel_local = rotate_world_to_local_2d(goal_rel_world[:2], yaw_heading)
         goal_rel_local = goal_rel_local / max(self.goal_scale, 1e-6)
@@ -247,18 +293,17 @@ class PedestrianRLEnv:
             "velocity": velocity,
             "speed": speed,
             "yaw_heading": yaw_heading,
-            "goal_distance": self.get_goal_distance(current_location),
-            "min_vehicle_distance": self.get_min_vehicle_distance(self.target_ped.get_location()),
+            "goal_distance": self.get_goal_distance(ped_id, current_location),
+            "min_vehicle_distance": self.get_min_vehicle_distance(ped.get_location()),
         }
         return obs, debug_state
 
-    def apply_action(self, action):
-        '''Apply one RL action to the target pedestrian.'''
+    def apply_action(self, ped, action):
         action = np.asarray(action, dtype=np.float32)
         target_speed = float(np.clip(action[0], 0.0, self.max_ped_speed))
         direction_local = self.normalize_direction(action[1:3])
 
-        yaw_heading = math.radians(self.target_ped.get_transform().rotation.yaw)
+        yaw_heading = math.radians(ped.get_transform().rotation.yaw)
         direction_world_xy = rotate_local_to_world_2d(direction_local, yaw_heading)
 
         control = carla.WalkerControl()
@@ -269,54 +314,50 @@ class PedestrianRLEnv:
             y=float(direction_world_xy[1]),
             z=0.0,
         )
-        self.target_ped.apply_control(control)
+        ped.apply_control(control)
 
         return np.array([target_speed, direction_local[0], direction_local[1]], dtype=np.float32)
 
-    def compute_reward(self, current_location, speed, ped_location):
-        '''Compute reward and reward terms for one step.'''
+    def compute_reward(self, ped_id, current_location, speed, ped_location):
         reward = 0.0
         reward_terms = {}
 
-        goal_distance = self.get_goal_distance(current_location)
+        goal_distance = self.get_goal_distance(ped_id, current_location)
         min_vehicle_distance = self.get_min_vehicle_distance(ped_location)
         on_driving_lane = self.is_on_driving_lane(ped_location)
 
-        # Collision reward
-        if self.last_collision:
+        collision = bool(self.last_collisions.get(ped_id, False))
+        if collision:
             reward_terms["collision"] = self.reward_weight["collision"]
             reward += reward_terms["collision"]
         else:
             reward_terms["collision"] = 0.0
 
-        # Reward when approaching vehicles
-        if self.prev_min_vehicle_distance is None:
+        prev_min_vehicle_distance = self.prev_min_vehicle_distances.get(ped_id, None)
+        if prev_min_vehicle_distance is None:
             approach_delta = 0.0
         else:
-            approach_delta = self.prev_min_vehicle_distance - min_vehicle_distance
+            approach_delta = prev_min_vehicle_distance - min_vehicle_distance
         reward_terms["approach_vehicle"] = self.reward_weight["approach_vehicle"] * float(np.clip(approach_delta, -1.0, 1.0))
         reward += reward_terms["approach_vehicle"]
 
-        # Small goal progress reward to prevent meaningless wandering
-        if self.prev_goal_distance is None:
+        prev_goal_distance = self.prev_goal_distances.get(ped_id, None)
+        if prev_goal_distance is None:
             goal_progress = 0.0
         else:
-            goal_progress = self.prev_goal_distance - goal_distance
+            goal_progress = prev_goal_distance - goal_distance
         reward_terms["goal_progress"] = self.reward_weight["goal_progress"] * float(np.clip(goal_progress, -1.0, 1.0))
         reward += reward_terms["goal_progress"]
 
-        # Stall penalty
         if speed < self.stall_speed_threshold:
             reward_terms["stall"] = self.reward_weight["stall"]
             reward += reward_terms["stall"]
         else:
             reward_terms["stall"] = 0.0
 
-        # Small per-step reward / penalty
         reward_terms["living"] = self.reward_weight["living"]
         reward += reward_terms["living"]
 
-        # Drivable-lane related term
         if on_driving_lane:
             reward_terms["lane"] = self.reward_weight["on_driving"]
             reward += reward_terms["lane"]
@@ -324,7 +365,6 @@ class PedestrianRLEnv:
             reward_terms["lane"] = self.reward_weight["off_road"]
             reward += reward_terms["lane"]
 
-        # Goal reached bonus
         goal_reached = goal_distance < self.goal_reached_threshold
         if goal_reached:
             reward_terms["goal_reached"] = self.reward_weight["goal_reached"]
@@ -332,21 +372,22 @@ class PedestrianRLEnv:
         else:
             reward_terms["goal_reached"] = 0.0
 
-        self.prev_goal_distance = goal_distance
-        self.prev_min_vehicle_distance = min_vehicle_distance
+        self.prev_goal_distances[ped_id] = goal_distance
+        self.prev_min_vehicle_distances[ped_id] = min_vehicle_distance
 
         extra_state = {
             "goal_distance": goal_distance,
             "min_vehicle_distance": min_vehicle_distance,
             "on_driving_lane": on_driving_lane,
             "goal_reached": goal_reached,
+            "collision": collision,
         }
         return reward, reward_terms, extra_state
 
     def spawn_target_and_background(self):
-        '''Spawn one RL-controlled pedestrian and background AI pedestrians.'''
-        self.target_ped = None
-        self.target_goal = None
+        self.target_peds = {}
+        self.target_goals = {}
+        self.active_ped_ids = []
 
         spawn_points = self.crossroad_pedestrians.get_ped_spawn_points(
             self.crossroad_pedestrians.ped_num,
@@ -354,8 +395,10 @@ class PedestrianRLEnv:
         )
         random.shuffle(spawn_points)
 
-        # ----- spawn target pedestrian first -----
-        while len(spawn_points) > 0 and self.target_ped is None:
+        spawned = 0
+        model_spawned = 0
+
+        while spawned < self.crossroad_pedestrians.ped_num and len(spawn_points) > 0:
             spawn_location = spawn_points.pop()
             destination = self.world.get_random_location_from_navigation()
 
@@ -363,31 +406,35 @@ class PedestrianRLEnv:
                 continue
             destination.z += 1.0
 
+            controller = "manual" if model_spawned < self.num_model_peds else "ai"
             ped = self.crossroad_pedestrians.spawn_single_walker(
                 spawn_location=spawn_location,
                 destination=destination,
-                controller="manual",
-                max_speed=self.max_ped_speed,
+                controller=controller,
+                max_speed=self.max_ped_speed if controller == "manual" else None,
             )
 
             if ped is None:
                 continue
 
-            self.target_ped = ped
-            self.target_goal = np.asarray(
-                self.crossroad_pedestrians.ped_goal_loc[ped.id],
-                dtype=np.float32,
-            )
+            spawned += 1
 
-        if self.target_ped is None:
-            raise RuntimeError("Failed to spawn RL-controlled pedestrian.")
+            if controller == "manual":
+                self.target_peds[ped.id] = ped
+                self.target_goals[ped.id] = np.asarray(
+                    self.crossroad_pedestrians.ped_goal_loc[ped.id],
+                    dtype=np.float32,
+                )
+                model_spawned += 1
 
-        # ----- spawn background pedestrians -----
-        max_background = max(self.crossroad_pedestrians.ped_num - 1, 0)
+        if len(self.target_peds) == 0:
+            raise RuntimeError("Failed to spawn any TD3-controlled pedestrians.")
+
+        max_background = max(self.crossroad_pedestrians.ped_num - len(self.target_peds), 0)
         background_target = min(self.num_background_pedestrians, max_background)
+        current_background = spawned - len(self.target_peds)
 
-        background_spawned = 0
-        while background_spawned < background_target and len(spawn_points) > 0:
+        while current_background < background_target and len(spawn_points) > 0:
             spawn_location = spawn_points.pop()
             destination = self.world.get_random_location_from_navigation()
 
@@ -400,55 +447,67 @@ class PedestrianRLEnv:
                 destination=destination,
                 controller="ai",
             )
-
             if ped is not None:
-                background_spawned += 1
+                current_background += 1
+
+        self.active_ped_ids = list(self.target_peds.keys())
 
     def reset(self):
-        '''Reset one RL episode.'''
-        self.destroy_collision_sensor()
+        self.destroy_collision_sensors()
+        self.close_target_wrappers()
         cleanup_simulation(self.world)
         self.crossroad_pedestrians.reset_pedestrians()
 
         self.spector.set_spector()
         self.aggressive_vehicles.aggressive_vehicles_spawn()
         self.spawn_target_and_background()
+        self.attach_target_wrappers()
 
         if self.warmup_ticks > 0:
             for _ in range(self.warmup_ticks):
                 self.world.tick()
 
-        self.attach_collision_sensor()
+        self.last_collisions = {ped_id: False for ped_id in self.target_peds.keys()}
+        self.last_bev_samples = {}
+        self.prev_locations = {}
+        self.prev_frame_ids = {}
+        self.prev_goal_distances = {}
+        self.prev_min_vehicle_distances = {}
+        self.episode_step = 0
+
+        self.attach_collision_sensors()
+
         self.refresh_conditions["start time"] = self.world.get_snapshot().timestamp.elapsed_seconds
         self.refresh_conditions["vehicle"]["stuck_tracker"] = {}
 
-        self.prev_location = None
-        self.prev_frame_id = None
-        self.prev_goal_distance = None
-        self.prev_min_vehicle_distance = None
-        self.episode_step = 0
-        self.last_collision = False
+        obs_dict = {}
+        frame_id = self.world.get_snapshot().timestamp.frame
 
-        obs, debug_state = self.build_observation()
-        self.last_obs = obs
+        for ped_id, ped in self.target_peds.items():
+            obs, debug_state = self.build_observation(ped_id, ped, frame_id)
+            obs_dict[ped_id] = obs
+            self.prev_goal_distances[ped_id] = debug_state["goal_distance"]
+            self.prev_min_vehicle_distances[ped_id] = debug_state["min_vehicle_distance"]
 
-        self.prev_location = debug_state["current_location"].copy()
-        self.prev_frame_id = debug_state["frame_id"]
-        self.prev_goal_distance = debug_state["goal_distance"]
-        self.prev_min_vehicle_distance = debug_state["min_vehicle_distance"]
+        self.last_obs = obs_dict
 
         info = {
             "episode_step": self.episode_step,
             "reset": True,
-            "ped_id": self.target_ped.id,
-            "goal_distance": debug_state["goal_distance"],
-            "min_vehicle_distance": debug_state["min_vehicle_distance"],
+            "ped_ids": list(obs_dict.keys()),
         }
-        return obs, info
+        return obs_dict, info
 
-    def step(self, action):
-        '''Run one environment step.'''
-        applied_action = self.apply_action(action)
+    def step(self, action_dict):
+        current_active_ids = list(self.active_ped_ids)
+        applied_action_dict = {}
+
+        for ped_id in current_active_ids:
+            ped = self.target_peds.get(ped_id, None)
+            if ped is None or not ped.is_alive:
+                continue
+            applied_action_dict[ped_id] = self.apply_action(ped, action_dict[ped_id])
+
         self.world.tick()
         self.episode_step += 1
 
@@ -458,107 +517,161 @@ class PedestrianRLEnv:
             intersection_position=self.intersection_position,
         )
 
-        terminated = False
-        truncated = False
-        term_reason = None
+        terminated_dict = {}
+        truncated_dict = {}
+        reward_dict = {}
+        next_obs_dict = {}
+        ped_info = {}
 
-        if self.target_ped is None or not self.target_ped.is_alive:
-            truncated = True
-            term_reason = "pedestrian_missing"
-            info = {
-                "episode_step": self.episode_step,
-                "ped_id": None,
-                "action": applied_action,
-                "reward_terms": {},
-                "collision": self.last_collision,
-                "goal_distance": None,
-                "min_vehicle_distance": None,
-                "on_driving_lane": None,
+        frame_id = self.world.get_snapshot().timestamp.frame
+
+        max_steps_reached = self.episode_step >= self.max_episode_steps
+
+        for ped_id in current_active_ids:
+            ped = self.target_peds.get(ped_id, None)
+            collision = bool(self.last_collisions.get(ped_id, False))
+
+            if ped is None or not ped.is_alive:
+                terminated = bool(collision)
+                truncated = not terminated
+                reward = float(self.reward_weight["collision"]) if collision else 0.0
+                reward_terms = {
+                    "collision": reward if collision else 0.0,
+                    "approach_vehicle": 0.0,
+                    "goal_progress": 0.0,
+                    "stall": 0.0,
+                    "living": 0.0,
+                    "lane": 0.0,
+                    "goal_reached": 0.0,
+                }
+                term_reason = "vehicle_collision" if collision else "pedestrian_missing"
+
+                terminated_dict[ped_id] = terminated
+                truncated_dict[ped_id] = truncated
+                reward_dict[ped_id] = reward
+                ped_info[ped_id] = {
+                    "action": applied_action_dict.get(ped_id, None),
+                    "reward_terms": reward_terms,
+                    "collision": collision,
+                    "goal_distance": None,
+                    "min_vehicle_distance": None,
+                    "on_driving_lane": None,
+                    "terminated": terminated,
+                    "truncated": truncated,
+                    "term_reason": term_reason,
+                }
+                continue
+
+            obs, debug_state = self.build_observation(ped_id, ped, frame_id)
+            reward, reward_terms, extra_state = self.compute_reward(
+                ped_id=ped_id,
+                current_location=debug_state["current_location"],
+                speed=debug_state["speed"],
+                ped_location=ped.get_location(),
+            )
+
+            terminated = False
+            truncated = False
+            term_reason = None
+
+            if extra_state["collision"]:
+                terminated = True
+                term_reason = "vehicle_collision"
+            elif extra_state["goal_reached"]:
+                terminated = True
+                term_reason = "goal_reached"
+            elif should_refresh:
+                truncated = True
+                term_reason = sim_state
+            elif max_steps_reached:
+                truncated = True
+                term_reason = "max_episode_steps"
+
+            if not (terminated or truncated):
+                next_obs_dict[ped_id] = obs
+
+            terminated_dict[ped_id] = terminated
+            truncated_dict[ped_id] = truncated
+            reward_dict[ped_id] = float(reward)
+
+            ped_info[ped_id] = {
+                "action": applied_action_dict.get(ped_id, None),
+                "reward_terms": reward_terms,
+                "collision": extra_state["collision"],
+                "goal_distance": extra_state["goal_distance"],
+                "min_vehicle_distance": extra_state["min_vehicle_distance"],
+                "on_driving_lane": extra_state["on_driving_lane"],
                 "terminated": terminated,
                 "truncated": truncated,
                 "term_reason": term_reason,
             }
-            return self.last_obs, 0.0, terminated, truncated, info
 
-        obs, debug_state = self.build_observation()
-        self.last_obs = obs
+        self.active_ped_ids = [
+            ped_id for ped_id in current_active_ids
+            if not (terminated_dict.get(ped_id, False) or truncated_dict.get(ped_id, False))
+        ]
 
-        current_location = debug_state["current_location"]
-        speed = debug_state["speed"]
-        ped_location = self.target_ped.get_location()
+        episode_done = should_refresh or max_steps_reached or (len(self.active_ped_ids) == 0)
 
-        reward, reward_terms, extra_state = self.compute_reward(current_location, speed, ped_location)
+        episode_reason = None
+        if should_refresh:
+            episode_reason = sim_state
+        elif max_steps_reached:
+            episode_reason = "max_episode_steps"
+        elif len(self.active_ped_ids) == 0:
+            episode_reason = "all_pedestrians_done"
 
-        if self.last_collision:
-            terminated = True
-            term_reason = "vehicle_collision"
-        elif extra_state["goal_reached"]:
-            terminated = True
-            term_reason = "goal_reached"
-        elif should_refresh:
-            truncated = True
-            term_reason = sim_state
-        elif self.episode_step >= self.max_episode_steps:
-            truncated = True
-            term_reason = "max_episode_steps"
+        self.last_obs = next_obs_dict
 
-        self.prev_location = current_location.copy()
-        self.prev_frame_id = debug_state["frame_id"]
-
-        info = {
-            "episode_step": self.episode_step,
-            "ped_id": self.target_ped.id,
-            "action": applied_action,
-            "reward_terms": reward_terms,
-            "collision": self.last_collision,
-            "goal_distance": extra_state["goal_distance"],
-            "min_vehicle_distance": extra_state["min_vehicle_distance"],
-            "on_driving_lane": extra_state["on_driving_lane"],
-            "terminated": terminated,
-            "truncated": truncated,
-            "term_reason": term_reason,
-        }
-
-        if self.render_bev and self.last_bev_sample is not None:
-            image = self.last_bev_sample.visualize_bev()
+        if self.render_bev and len(self.last_bev_samples) > 0:
+            first_ped_id = next(iter(self.last_bev_samples.keys()))
+            image = self.last_bev_samples[first_ped_id].visualize_bev()
             cv2.imshow("TD3 RL BEV", image)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 raise KeyboardInterrupt
 
-        return obs, float(reward), terminated, truncated, info
+        info = {
+            "episode_step": self.episode_step,
+            "episode_done": episode_done,
+            "episode_reason": episode_reason,
+            "ped_info": ped_info,
+        }
+        return next_obs_dict, reward_dict, terminated_dict, truncated_dict, info
 
     def sample_random_action(self):
-        '''Sample one random continuous action.'''
         speed = np.float32(np.random.uniform(0.0, self.max_ped_speed))
         theta = np.random.uniform(-math.pi, math.pi)
         direction = np.array([math.sin(theta), math.cos(theta)], dtype=np.float32)
         return np.array([speed, direction[0], direction[1]], dtype=np.float32)
 
-
-# --- TD3 Trainer ---
+# --- TD3 trainer ---
 class TD3Trainer:
-    '''Train TD3 online in CARLA.''' 
+    '''
+    Multi-ped online TD3 trainer.
+    One shared policy, many ped transitions per world tick.
+    '''
 
     def __init__(self, env, agent, training_config):
         self.env = env
         self.agent = agent
         self.training_config = training_config
 
-        td3_cfg = training_config['td3']
-        params = td3_cfg['params']
+        td3_cfg = training_config["td3"]
+        params = td3_cfg["params"]
 
-        self.checkpoint_dir = td3_cfg['checkpoint_dir']
-        self.media_dir = td3_cfg['media_dir']
+        self.checkpoint_dir = td3_cfg["checkpoint_dir"]
+        self.media_dir = td3_cfg["media_dir"]
 
-        self.num_episodes = int(params['num_episodes'])
-        self.batch_size = int(params['batch_size'])
-        self.start_steps = int(params['start_steps'])
-        self.updates_per_step = int(params['updates_per_step'])
-        self.save_every = int(params['save_every'])
-        self.episode_smooth_window = int(params.get('episode_smooth_window', 10))
-        self.loss_smooth_window = int(params.get('loss_smooth_window', 10))
-        self.rate_smooth_window = int(params.get('rate_smooth_window', 10))
+        self.num_episodes = int(params["num_episodes"])
+        self.batch_size = int(params["batch_size"])
+        self.start_steps = int(params["start_steps"])
+        self.updates_per_step = int(params["updates_per_step"])
+        self.save_every = int(params["save_every"])
+        self.episode_smooth_window = int(params.get("episode_smooth_window", 10))
+        self.loss_smooth_window = int(params.get("loss_smooth_window", 10))
+        self.rate_smooth_window = int(params.get("rate_smooth_window", 10))
 
+        # count transitions, not world ticks
         self.total_env_steps = 0
         self.history = []
 
@@ -566,12 +679,10 @@ class TD3Trainer:
         os.makedirs(self.media_dir, exist_ok=True)
 
     def save_history(self, save_path):
-        '''Save TD3 training history to json.''' 
         save_json(self.history, save_path)
 
     def save_outputs(self):
-        '''Save history json and TD3 learning plots.''' 
-        history_path = os.path.join(self.checkpoint_dir, 'td3_training_history.json')
+        history_path = os.path.join(self.checkpoint_dir, "td3_training_history.json")
         self.save_history(history_path)
 
         plot_td3_training_results(
@@ -583,154 +694,195 @@ class TD3Trainer:
         )
 
     def train(self):
-        '''Run TD3 training loop.''' 
         reward_term_names = [
-            'collision',
-            'approach_vehicle',
-            'goal_progress',
-            'stall',
-            'living',
-            'lane',
-            'goal_reached',
+            "collision",
+            "approach_vehicle",
+            "goal_progress",
+            "stall",
+            "living",
+            "lane",
+            "goal_reached",
         ]
 
         for episode_idx in range(1, self.num_episodes + 1):
-            obs, reset_info = self.env.reset()
+            obs_dict, reset_info = self.env.reset()
+
             episode_reward = 0.0
             episode_steps = 0
-            terminated = False
-            truncated = False
-            last_info = reset_info
+            transition_count = 0
             last_update_info = None
+            last_info = reset_info
 
             collision_flag = False
+            goal_reached_flag = False
             drivable_steps = 0
             stall_steps = 0
-            final_goal_distance = None
-            episode_min_vehicle_distance = float('inf')
+            latest_goal_distance = {}
+            episode_min_vehicle_distance = float("inf")
             reward_terms_sum = {term_name: 0.0 for term_name in reward_term_names}
 
-            while not (terminated or truncated):
-                if self.total_env_steps < self.start_steps:
-                    action = self.env.sample_random_action()
-                else:
-                    action = self.agent.select_action(obs, add_noise=True)
+            while True:
+                if len(obs_dict) == 0:
+                    break
 
-                next_obs, reward, terminated, truncated, info = self.env.step(action)
-                done = bool(terminated or truncated)
+                active_ped_ids = list(obs_dict.keys())
+                action_dict = {}
 
-                self.agent.store_transition(obs, action, reward, next_obs, done)
+                for ped_id, obs in obs_dict.items():
+                    if self.total_env_steps < self.start_steps:
+                        action_dict[ped_id] = self.env.sample_random_action()
+                    else:
+                        action_dict[ped_id] = self.agent.select_action(obs, add_noise=True)
+
+                next_obs_dict, reward_dict, terminated_dict, truncated_dict, info = self.env.step(action_dict)
+                ped_info = info.get("ped_info", {})
+
+                for ped_id in active_ped_ids:
+                    obs = obs_dict[ped_id]
+                    action = action_dict[ped_id]
+                    reward = float(reward_dict.get(ped_id, 0.0))
+                    done = bool(
+                        terminated_dict.get(ped_id, False)
+                        or truncated_dict.get(ped_id, False)
+                    )
+                    next_obs = next_obs_dict.get(ped_id, obs)
+
+                    self.agent.store_transition(
+                        obs=obs,
+                        action=action,
+                        reward=reward,
+                        next_obs=next_obs,
+                        done=done,
+                    )
+
+                    episode_reward += reward
+                    transition_count += 1
+                    self.total_env_steps += 1
+
+                    ped_step_info = ped_info.get(ped_id, {})
+                    reward_terms = ped_step_info.get("reward_terms", {})
+
+                    if bool(ped_step_info.get("collision", False)):
+                        collision_flag = True
+
+                    if bool(ped_step_info.get("term_reason", None) == "goal_reached"):
+                        goal_reached_flag = True
+
+                    if bool(ped_step_info.get("on_driving_lane", False)):
+                        drivable_steps += 1
+
+                    if float(reward_terms.get("stall", 0.0)) != 0.0:
+                        stall_steps += 1
+
+                    for term_name in reward_term_names:
+                        reward_terms_sum[term_name] += float(reward_terms.get(term_name, 0.0))
+
+                    goal_distance = ped_step_info.get("goal_distance", None)
+                    if goal_distance is not None:
+                        latest_goal_distance[ped_id] = float(goal_distance)
+
+                    min_vehicle_distance = ped_step_info.get("min_vehicle_distance", None)
+                    if min_vehicle_distance is not None:
+                        episode_min_vehicle_distance = min(
+                            episode_min_vehicle_distance,
+                            float(min_vehicle_distance)
+                        )
 
                 if len(self.agent.replay_buffer) >= self.batch_size:
-                    for _ in range(self.updates_per_step):
+                    num_updates = self.updates_per_step * max(len(active_ped_ids), 1)
+                    for _ in range(num_updates):
                         update_info = self.agent.train_step(batch_size=self.batch_size)
                         if update_info is not None:
                             last_update_info = update_info
 
-                obs = next_obs
-                episode_reward += reward
+                obs_dict = next_obs_dict
                 episode_steps += 1
-                self.total_env_steps += 1
                 last_info = info
 
-                if bool(info.get('collision', False)):
-                    collision_flag = True
+                if bool(info.get("episode_done", False)):
+                    break
 
-                if bool(info.get('on_driving_lane', False)):
-                    drivable_steps += 1
-
-                reward_terms = info.get('reward_terms', {})
-                for term_name in reward_term_names:
-                    reward_terms_sum[term_name] += float(reward_terms.get(term_name, 0.0))
-
-                if float(reward_terms.get('stall', 0.0)) != 0.0:
-                    stall_steps += 1
-
-                if info.get('goal_distance', None) is not None:
-                    final_goal_distance = float(info['goal_distance'])
-
-                if info.get('min_vehicle_distance', None) is not None:
-                    episode_min_vehicle_distance = min(
-                        episode_min_vehicle_distance,
-                        float(info['min_vehicle_distance'])
-                    )
+            final_goal_distance = None
+            if len(latest_goal_distance) > 0:
+                final_goal_distance = float(np.mean(list(latest_goal_distance.values())))
 
             episode_result = {
-                'episode': episode_idx,
-                'reward': float(episode_reward),
-                'steps': int(episode_steps),
-                'termination': last_info.get('term_reason', None),
-                'terminated': bool(terminated),
-                'truncated': bool(truncated),
-                'goal_reached': bool(last_info.get('term_reason', None) == 'goal_reached'),
-                'collision': bool(collision_flag),
-                'final_goal_distance': final_goal_distance,
-                'min_vehicle_distance': None if episode_min_vehicle_distance == float('inf') else float(episode_min_vehicle_distance),
-                'drivable_ratio': float(drivable_steps / max(episode_steps, 1)),
-                'stall_ratio': float(stall_steps / max(episode_steps, 1)),
-                'buffer_size': len(self.agent.replay_buffer),
-                'total_env_steps': self.total_env_steps,
-                'reward_terms': reward_terms_sum,
+                "episode": episode_idx,
+                "reward": float(episode_reward),
+                "steps": int(episode_steps),              # world ticks
+                "transitions": int(transition_count),     # replay transitions
+                "termination": last_info.get("episode_reason", None),
+                "terminated": bool(collision_flag or goal_reached_flag),
+                "truncated": bool(last_info.get("episode_reason", None) in ["max_episode_steps", "Time Out!"]),
+                "goal_reached": bool(goal_reached_flag),
+                "collision": bool(collision_flag),
+                "final_goal_distance": final_goal_distance,
+                "min_vehicle_distance": None if episode_min_vehicle_distance == float("inf") else float(episode_min_vehicle_distance),
+                "drivable_ratio": float(drivable_steps / max(transition_count, 1)),
+                "stall_ratio": float(stall_steps / max(transition_count, 1)),
+                "buffer_size": len(self.agent.replay_buffer),
+                "total_env_steps": self.total_env_steps,
+                "reward_terms": reward_terms_sum,
             }
 
             if last_update_info is not None:
-                episode_result['critic_loss'] = last_update_info['critic_loss']
-                episode_result['actor_loss'] = last_update_info['actor_loss']
-                episode_result['total_updates'] = last_update_info['total_updates']
+                episode_result["critic_loss"] = last_update_info["critic_loss"]
+                episode_result["actor_loss"] = last_update_info["actor_loss"]
+                episode_result["total_updates"] = last_update_info["total_updates"]
 
             self.history.append(episode_result)
 
             print(
                 f"[TD3 Train] Episode [{episode_idx}/{self.num_episodes}] "
                 f"reward={episode_reward:.4f}, "
-                f"steps={episode_steps}, "
-                f"reason={last_info.get('term_reason', None)}, "
+                f"world_steps={episode_steps}, "
+                f"transitions={transition_count}, "
+                f"reason={last_info.get('episode_reason', None)}, "
                 f"collision={collision_flag}, "
-                f"goal_reached={episode_result['goal_reached']}, "
+                f"goal_reached={goal_reached_flag}, "
                 f"buffer={len(self.agent.replay_buffer)}"
             )
 
             if episode_idx % self.save_every == 0:
-                checkpoint_path = os.path.join(self.checkpoint_dir, f'td3_episode_{episode_idx:03d}.pt')
+                checkpoint_path = os.path.join(self.checkpoint_dir, f"td3_episode_{episode_idx:03d}.pt")
                 self.agent.save(checkpoint_path)
                 print(f"Saved: {checkpoint_path}")
                 self.save_outputs()
 
-        final_checkpoint_path = os.path.join(self.checkpoint_dir, 'td3_last.pt')
+        final_checkpoint_path = os.path.join(self.checkpoint_dir, "td3_last.pt")
         self.agent.save(final_checkpoint_path)
         print(f"Saved: {final_checkpoint_path}")
 
         self.save_outputs()
 
-# --- helper to build td3 agent ---
-def build_td3_agent(training_config, max_speed, device='cuda'):
-    '''Build TD3 agent from training_config.json.''' 
-    cnn_cfg = training_config['cnn']
-    td3_params = training_config['td3']['params']
+# --- TD3 agent helper ---
+def build_td3_agent(training_config, max_speed, device="cuda"):
+    """Build TD3 agent from training_config.json."""
+    cnn_cfg = training_config["cnn"]
+    td3_params = training_config["td3"]["params"]
 
     agent = TD3Agent(
-        input_channels=cnn_cfg['input_channels'],
-        bev_feature_dim=cnn_cfg['bev_feature_dim'],
-        scalar_feature_dim=cnn_cfg['scalar_feature_dim'],
-        hidden_dim=cnn_cfg['hidden_dim'],
+        input_channels=cnn_cfg["input_channels"],
+        bev_feature_dim=cnn_cfg["bev_feature_dim"],
+        scalar_feature_dim=cnn_cfg["scalar_feature_dim"],
+        hidden_dim=cnn_cfg["hidden_dim"],
         action_dim=3,
         max_speed=max_speed,
-        actor_learning_rate=td3_params['actor_learning_rate'],
-        critic_learning_rate=td3_params['critic_learning_rate'],
-        actor_weight_decay=td3_params['actor_weight_decay'],
-        critic_weight_decay=td3_params['critic_weight_decay'],
-        gamma=td3_params['gamma'],
-        tau=td3_params['tau'],
-        policy_noise=td3_params['policy_noise'],
-        noise_clip=td3_params['noise_clip'],
-        policy_delay=td3_params['policy_delay'],
-        exploration_speed_noise=td3_params['exploration_speed_noise'],
-        exploration_direction_noise=td3_params['exploration_direction_noise'],
-        replay_capacity=td3_params['replay_capacity'],
-        dropout=td3_params['dropout'],
-        device=device,
+        actor_learning_rate=td3_params["actor_learning_rate"],
+        critic_learning_rate=td3_params["critic_learning_rate"],
+        actor_weight_decay=td3_params["actor_weight_decay"],
+        critic_weight_decay=td3_params["critic_weight_decay"],
+        gamma=td3_params["gamma"],
+        tau=td3_params["tau"],
+        policy_noise=td3_params["policy_noise"],
+        noise_clip=td3_params["noise_clip"],
+        policy_delay=td3_params["policy_delay"],
+        exploration_speed_noise=td3_params["exploration_speed_noise"],
+        exploration_direction_noise=td3_params["exploration_direction_noise"],
+        replay_capacity=td3_params["replay_capacity"],
+        dropout=td3_params["dropout"],
+        device=str(device),
     )
-
     return agent
 
 

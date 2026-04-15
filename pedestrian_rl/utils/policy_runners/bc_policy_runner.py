@@ -471,7 +471,8 @@ class PolicyRunner:
 
     def run(self, render_bev=True):
         self.reset_episode()
+        pred_every_n_steps = 5
         while True:
-            for _ in range(2):
+            for _ in range(pred_every_n_steps):
                 self.world.tick()
             self.step_once(render_bev=render_bev)

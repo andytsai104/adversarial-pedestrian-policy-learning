@@ -20,6 +20,8 @@ INPUT_CHANNELS = training_config["cnn"]["input_channels"]
 BEV_FEATURE_DIM = training_config["cnn"]["bev_feature_dim"]
 SCALAR_FEATURE_DIM = training_config["cnn"]["scalar_feature_dim"]
 HIDDEN_DIM = training_config["cnn"]["hidden_dim"]
+STATE_FEATURE_DIM = training_config["cnn"].get("state_feature_dim", 64)
+GOAL_FEATURE_DIM = training_config["cnn"].get("goal_feature_dim", 64)
 
 # td3 params
 TD3_PARAMS = training_config["td3"]["params"]
@@ -36,40 +38,88 @@ EXPLORATION_SPEED_NOISE = TD3_PARAMS["exploration_speed_noise"]
 EXPLORATION_DIRECTION_NOISE = TD3_PARAMS["exploration_direction_noise"]
 REPLAY_CAPACITY = TD3_PARAMS["replay_capacity"]
 DROPOUT = TD3_PARAMS["dropout"]
+ACTION_FEATURE_DIM = TD3_PARAMS.get("action_feature_dim", 32)
+
+
+class FiLMGenerator(nn.Module):
+    '''
+    Generate FiLM parameters from conditioning features.
+    Output:
+        gamma: multiplicative scale, initialized near identity
+        beta : additive shift, initialized near zero
+    '''
+    def __init__(self, conditioning_dim: int, feature_dim: int):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(conditioning_dim, conditioning_dim),
+            nn.LayerNorm(conditioning_dim),
+            nn.SiLU(),
+            nn.Linear(conditioning_dim, feature_dim * 2),
+        )
+
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, conditioning_feature):
+        gamma_beta = self.net(conditioning_feature)
+        gamma_raw, beta = torch.chunk(gamma_beta, 2, dim=-1)
+        gamma = 1.0 + gamma_raw
+        return gamma, beta
 
 
 class Actor(nn.Module):
     '''
-    TD3 actor using BEV features + local-frame scalar features.
-
-    Scalar inputs:
-        velocity_local   : (B, 2)  -> [right, forward]
-        speed            : (B, 1)
-        yaw_sin          : (B, 1)
-        yaw_cos          : (B, 1)
-        goal_rel_local   : (B, 2)  -> [right, forward]
-
-    Action outputs:
-        action[:, 0]     : target speed in [0, max_speed]
-        action[:, 1:3]   : local direction [right, forward]
+    TD3 actor with modality fusion:
+        BEV encoder
+        + state encoder
+        + goal encoder
+        + FiLM conditioning on BEV feature
     '''
 
     def __init__(
         self,
         cnn_encoder,
         bev_feature_dim=BEV_FEATURE_DIM,
-        scalar_feature_dim=SCALAR_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,   # kept for compatibility
         hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
         dropout=DROPOUT,
+        state_feature_dim=STATE_FEATURE_DIM,
+        goal_feature_dim=GOAL_FEATURE_DIM,
     ):
         super().__init__()
 
         self.cnn_encoder = cnn_encoder
         self.max_speed = float(max_speed)
 
+        # velocity_local(2) + speed(1) + yaw_sin(1) + yaw_cos(1) = 5
+        self.state_encoder = nn.Sequential(
+            nn.Linear(5, state_feature_dim),
+            nn.LayerNorm(state_feature_dim),
+            nn.SiLU(),
+            nn.Linear(state_feature_dim, state_feature_dim),
+            nn.SiLU(),
+        )
+
+        # goal_rel_local(2)
+        self.goal_encoder = nn.Sequential(
+            nn.Linear(2, goal_feature_dim),
+            nn.LayerNorm(goal_feature_dim),
+            nn.SiLU(),
+            nn.Linear(goal_feature_dim, goal_feature_dim),
+            nn.SiLU(),
+        )
+
+        self.film = FiLMGenerator(
+            conditioning_dim=state_feature_dim + goal_feature_dim,
+            feature_dim=bev_feature_dim,
+        )
+
+        fusion_dim = bev_feature_dim + state_feature_dim + goal_feature_dim
+
         self.trunk = nn.Sequential(
-            nn.Linear(bev_feature_dim + scalar_feature_dim, hidden_dim),
+            nn.Linear(fusion_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Dropout(dropout),
@@ -93,30 +143,33 @@ class Actor(nn.Module):
 
     @staticmethod
     def normalize_direction(direction, eps=1e-6):
-        '''Normalize local-frame 2D direction vectors.'''
         norm = torch.norm(direction, dim=-1, keepdim=True)
         norm = torch.clamp(norm, min=eps)
         return direction / norm
 
-    def get_scalar_feature(self, obs):
-        '''Get scalar features from one observation batch.'''
-        velocity_local = obs["velocity_local"]
-        speed = obs["speed"].unsqueeze(-1)
-        yaw_sin = obs["yaw_sin"].unsqueeze(-1)
-        yaw_cos = obs["yaw_cos"].unsqueeze(-1)
-        goal_rel_local = obs["goal_rel_local"]
+    def forward(self, obs):
+        bev_feature = self.cnn_encoder(obs["bev_data"])
 
-        return torch.cat(
-            [velocity_local, speed, yaw_sin, yaw_cos, goal_rel_local],
+        state_input = torch.cat(
+            [
+                obs["velocity_local"],
+                obs["speed"].unsqueeze(-1),
+                obs["yaw_sin"].unsqueeze(-1),
+                obs["yaw_cos"].unsqueeze(-1),
+            ],
             dim=-1,
         )
+        state_feature = self.state_encoder(state_input)
+        goal_feature = self.goal_encoder(obs["goal_rel_local"])
 
-    def forward(self, obs):
-        '''Predict continuous action [speed, dir_right, dir_forward].'''
-        bev_feature = self.cnn_encoder(obs["bev_data"])
-        scalar_feature = self.get_scalar_feature(obs)
+        conditioning_feature = torch.cat([state_feature, goal_feature], dim=-1)
+        gamma, beta = self.film(conditioning_feature)
+        bev_feature = gamma * bev_feature + beta
 
-        fused_feature = torch.cat([bev_feature, scalar_feature], dim=-1)
+        fused_feature = torch.cat(
+            [bev_feature, state_feature, goal_feature],
+            dim=-1,
+        )
         latent_feature = self.trunk(fused_feature)
 
         pred_speed = self.speed_head(latent_feature) * self.max_speed
@@ -127,30 +180,65 @@ class Actor(nn.Module):
 
 class CriticBranch(nn.Module):
     '''
-    One critic branch Q(s, a).
-
-    The action is normalized before fusion:
-        speed        -> speed / max_speed
-        direction    -> unchanged local unit direction
+    One critic branch Q(s, a) with modality fusion.
     '''
 
     def __init__(
         self,
         cnn_encoder,
         bev_feature_dim=BEV_FEATURE_DIM,
-        scalar_feature_dim=SCALAR_FEATURE_DIM,
+        scalar_feature_dim=SCALAR_FEATURE_DIM,   # kept for compatibility
         action_dim=3,
         hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
         dropout=DROPOUT,
+        state_feature_dim=STATE_FEATURE_DIM,
+        goal_feature_dim=GOAL_FEATURE_DIM,
+        action_feature_dim=ACTION_FEATURE_DIM,
     ):
         super().__init__()
 
         self.cnn_encoder = cnn_encoder
         self.max_speed = float(max_speed)
 
+        self.state_encoder = nn.Sequential(
+            nn.Linear(5, state_feature_dim),
+            nn.LayerNorm(state_feature_dim),
+            nn.SiLU(),
+            nn.Linear(state_feature_dim, state_feature_dim),
+            nn.SiLU(),
+        )
+
+        self.goal_encoder = nn.Sequential(
+            nn.Linear(2, goal_feature_dim),
+            nn.LayerNorm(goal_feature_dim),
+            nn.SiLU(),
+            nn.Linear(goal_feature_dim, goal_feature_dim),
+            nn.SiLU(),
+        )
+
+        self.action_encoder = nn.Sequential(
+            nn.Linear(action_dim, action_feature_dim),
+            nn.LayerNorm(action_feature_dim),
+            nn.SiLU(),
+            nn.Linear(action_feature_dim, action_feature_dim),
+            nn.SiLU(),
+        )
+
+        self.film = FiLMGenerator(
+            conditioning_dim=state_feature_dim + goal_feature_dim,
+            feature_dim=bev_feature_dim,
+        )
+
+        fusion_dim = (
+            bev_feature_dim
+            + state_feature_dim
+            + goal_feature_dim
+            + action_feature_dim
+        )
+
         self.q_net = nn.Sequential(
-            nn.Linear(bev_feature_dim + scalar_feature_dim + action_dim, hidden_dim),
+            nn.Linear(fusion_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             nn.Dropout(dropout),
@@ -160,33 +248,37 @@ class CriticBranch(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
-    def get_scalar_feature(self, obs):
-        '''Get scalar features from one observation batch.'''
-        velocity_local = obs["velocity_local"]
-        speed = obs["speed"].unsqueeze(-1)
-        yaw_sin = obs["yaw_sin"].unsqueeze(-1)
-        yaw_cos = obs["yaw_cos"].unsqueeze(-1)
-        goal_rel_local = obs["goal_rel_local"]
-
-        return torch.cat(
-            [velocity_local, speed, yaw_sin, yaw_cos, goal_rel_local],
-            dim=-1,
-        )
-
     def normalize_action(self, action):
-        '''Normalize action before sending it to the critic.'''
         speed = action[:, :1] / max(self.max_speed, 1e-6)
         direction = action[:, 1:3]
         return torch.cat([speed, direction], dim=-1)
 
     def forward(self, obs, action):
-        '''Estimate one Q value.'''
         bev_feature = self.cnn_encoder(obs["bev_data"])
-        scalar_feature = self.get_scalar_feature(obs)
-        action_feature = self.normalize_action(action)
 
-        q_input = torch.cat([bev_feature, scalar_feature, action_feature], dim=-1)
-        return self.q_net(q_input)
+        state_input = torch.cat(
+            [
+                obs["velocity_local"],
+                obs["speed"].unsqueeze(-1),
+                obs["yaw_sin"].unsqueeze(-1),
+                obs["yaw_cos"].unsqueeze(-1),
+            ],
+            dim=-1,
+        )
+        state_feature = self.state_encoder(state_input)
+        goal_feature = self.goal_encoder(obs["goal_rel_local"])
+
+        conditioning_feature = torch.cat([state_feature, goal_feature], dim=-1)
+        gamma, beta = self.film(conditioning_feature)
+        bev_feature = gamma * bev_feature + beta
+
+        action_feature = self.action_encoder(self.normalize_action(action))
+
+        fused_feature = torch.cat(
+            [bev_feature, state_feature, goal_feature, action_feature],
+            dim=-1,
+        )
+        return self.q_net(fused_feature)
 
 
 class TwinCritic(nn.Module):
@@ -201,6 +293,9 @@ class TwinCritic(nn.Module):
         hidden_dim=HIDDEN_DIM,
         max_speed=MAX_SPEED,
         dropout=DROPOUT,
+        state_feature_dim=STATE_FEATURE_DIM,
+        goal_feature_dim=GOAL_FEATURE_DIM,
+        action_feature_dim=ACTION_FEATURE_DIM,
     ):
         super().__init__()
 
@@ -212,6 +307,9 @@ class TwinCritic(nn.Module):
             hidden_dim=hidden_dim,
             max_speed=max_speed,
             dropout=dropout,
+            state_feature_dim=state_feature_dim,
+            goal_feature_dim=goal_feature_dim,
+            action_feature_dim=action_feature_dim,
         )
         self.q2 = CriticBranch(
             cnn_encoder=CNNEncoder(input_channels=input_channels, feature_dim=bev_feature_dim),
@@ -221,16 +319,17 @@ class TwinCritic(nn.Module):
             hidden_dim=hidden_dim,
             max_speed=max_speed,
             dropout=dropout,
+            state_feature_dim=state_feature_dim,
+            goal_feature_dim=goal_feature_dim,
+            action_feature_dim=action_feature_dim,
         )
 
     def forward(self, obs, action):
-        '''Return two Q estimates.'''
         q1 = self.q1(obs, action)
         q2 = self.q2(obs, action)
         return q1, q2
 
     def q1_forward(self, obs, action):
-        '''Return only q1 for actor optimization.'''
         return self.q1(obs, action)
 
 
@@ -248,7 +347,7 @@ class ReplayBuffer:
         '''Store one transition.'''
         transition = {
             "obs": {
-                "bev_data": np.asarray(obs["bev_data"], dtype=np.float32),
+                "bev_data": np.asarray(obs["bev_data"], dtype=np.uint8),
                 "velocity_local": np.asarray(obs["velocity_local"], dtype=np.float32),
                 "goal_rel_local": np.asarray(obs["goal_rel_local"], dtype=np.float32),
                 "yaw_sin": np.float32(obs["yaw_sin"]),
@@ -258,7 +357,7 @@ class ReplayBuffer:
             "action": np.asarray(action, dtype=np.float32),
             "reward": np.float32(reward),
             "next_obs": {
-                "bev_data": np.asarray(next_obs["bev_data"], dtype=np.float32),
+                "bev_data": np.asarray(next_obs["bev_data"], dtype=np.uint8),
                 "velocity_local": np.asarray(next_obs["velocity_local"], dtype=np.float32),
                 "goal_rel_local": np.asarray(next_obs["goal_rel_local"], dtype=np.float32),
                 "yaw_sin": np.float32(next_obs["yaw_sin"]),
@@ -274,7 +373,7 @@ class ReplayBuffer:
         batch = random.sample(self.buffer, batch_size)
 
         obs = {
-            "bev_data": np.stack([item["obs"]["bev_data"] for item in batch], axis=0),
+            "bev_data": np.stack([item["obs"]["bev_data"] for item in batch], axis=0).astype(np.float32),
             "velocity_local": np.stack([item["obs"]["velocity_local"] for item in batch], axis=0),
             "goal_rel_local": np.stack([item["obs"]["goal_rel_local"] for item in batch], axis=0),
             "yaw_sin": np.asarray([item["obs"]["yaw_sin"] for item in batch], dtype=np.float32),
@@ -284,7 +383,7 @@ class ReplayBuffer:
 
         next_obs = {
             "bev_data": np.stack([item["next_obs"]["bev_data"] for item in batch], axis=0),
-            "velocity_local": np.stack([item["next_obs"]["velocity_local"] for item in batch], axis=0),
+            "velocity_local": np.stack([item["next_obs"]["velocity_local"] for item in batch], axis=0).astype(np.float32),
             "goal_rel_local": np.stack([item["next_obs"]["goal_rel_local"] for item in batch], axis=0),
             "yaw_sin": np.asarray([item["next_obs"]["yaw_sin"] for item in batch], dtype=np.float32),
             "yaw_cos": np.asarray([item["next_obs"]["yaw_cos"] for item in batch], dtype=np.float32),
