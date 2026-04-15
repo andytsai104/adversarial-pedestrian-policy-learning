@@ -33,6 +33,7 @@ def main():
         model_name=model_name,
         checkpoint_path=checkpoint_path,
         num_model_peds=1,
+        evaluation=False
     )
 
     try:

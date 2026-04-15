@@ -132,6 +132,7 @@ class EpisodeEvaluator:
         avg_speed = self.speed_sum / self.episode_steps if self.episode_steps > 0 else 0.0
 
         return {
+            "ped_id": self.target_ped.id,
             "controller": controller_name,
             "seed": seed,
             "episode_id": episode_id,

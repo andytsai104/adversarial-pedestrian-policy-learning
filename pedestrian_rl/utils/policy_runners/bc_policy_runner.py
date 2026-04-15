@@ -94,7 +94,7 @@ class PolicyRunner:
             self.world,
             location=self.intersection_position,
         )
-        self.bev_wrapper = bev_wrapper(cfg=None, world=self.world)
+        self.bev_wrapper_class = bev_wrapper
         self.ped_wrappers = {}
         self.bev_sampler = bev_sampler
 
@@ -170,10 +170,10 @@ class PolicyRunner:
         self.episode_step = 0
 
     def reset_episode(self):
-        cleanup_simulation(self.world)
-        self.crossroad_pedestrians.reset_pedestrians()
         self.close_target_wrappers()
         self.close_evaluators()
+        cleanup_simulation(self.world)
+        self.crossroad_pedestrians.reset_pedestrians()
 
         self.spector.set_spector()
         self.aggressive_vehicles.aggressive_vehicles_spawn()
@@ -351,7 +351,7 @@ class PolicyRunner:
     def attach_target_wrappers(self):
         self.close_target_wrappers()
         for ped_id, ped in self.target_peds.items():
-            wrapper = SemanticBEVWrapper(cfg=None, world=self.world)
+            wrapper = self.bev_wrapper_class(cfg=None, world=self.world)
             wrapper.attach_to_actor(ped)
             self.ped_wrappers[ped_id] = wrapper
 
@@ -472,6 +472,6 @@ class PolicyRunner:
     def run(self, render_bev=True):
         self.reset_episode()
         while True:
-            # for _ in range(2):
-            #     self.world.tick()
+            for _ in range(2):
+                self.world.tick()
             self.step_once(render_bev=render_bev)

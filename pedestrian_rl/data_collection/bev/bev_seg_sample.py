@@ -75,15 +75,15 @@ class SemanticBEVWrapper:
         self.world = world
         self.hero_actor = None
         self.actor_list = None
-        self.hero_ped_size = self.config["hero_ped_size"]
-        self.other_ped_size = self.config["other_ped_size"]
         self.sensor = None
-        self.sensor_queue: "queue.Queue[carla.Image]" = queue.Queue(maxsize=4)
 
         if cfg is not None:
             self.config = cfg
         else:
             self.config = SemanticBEVWrapper.config
+
+        self.hero_ped_size = self.config["hero_ped_size"]
+        self.other_ped_size = self.config["other_ped_size"]
 
         self.width = int(image_size_x)
         self.height = int(image_size_y)
@@ -94,11 +94,10 @@ class SemanticBEVWrapper:
         self.fov = float(fov)
         self.sensor_tick = float(sensor_tick)
 
-        self.last_image = None
-        self.last_frame = -1
+        self.last_used_image = None
         self.last_tag_map = None
-
-        self.sensor_need_warmup = False
+        self.latest_raw_image = None
+        self.latest_frame = -1
 
     def _build_sensor_bp(self):
         blueprint_library = self.world.get_blueprint_library()
@@ -135,22 +134,11 @@ class SemanticBEVWrapper:
             attach_to=actor,
         )
 
-        # weak_queue = self.sensor_queue
-
-        # def _on_image(image: carla.Image):
-        #     # Keep the newest frame only.
-        #     while not weak_queue.empty():
-        #         try:
-        #             weak_queue.get_nowait()
-        #         except queue.Empty:
-        #             break
-        #     weak_queue.put(image)
         def _on_image(image: carla.Image):
-            self.latest_image = image
+            self.latest_raw_image = image
             self.latest_frame = image.frame
 
         self.sensor.listen(_on_image)
-        self.sensor_need_warmup = True
 
     def destroy_sensor(self):
         if self.sensor is not None and self.sensor.is_alive:
@@ -158,14 +146,10 @@ class SemanticBEVWrapper:
             self.sensor.destroy()
 
         self.sensor = None
-        self.latest_image = None
+        self.latest_raw_image = None
+        self.last_used_image = None
         self.latest_frame = -1
         self.last_tag_map = None
-        while not self.sensor_queue.empty():
-            try:
-                self.sensor_queue.get_nowait()
-            except queue.Empty:
-                break
 
     def set_hero_actor(self, actor: carla.Actor):
         '''
@@ -202,30 +186,10 @@ class SemanticBEVWrapper:
         if self.sensor is None or (not self.sensor.is_alive):
             self.attach_to_actor(self.hero_actor)
 
-    def _get_latest_image(self, timeout: float) -> carla.Image:
-        self._ensure_sensor()
-        
-        # Tick if the sensor got initialized
-        if self.sensor_need_warmup:
-            self.world.tick()
-            self.sensor_need_warmup = False
-        
-        image = None
-        try:
-            image = self.sensor_queue.get(timeout=timeout)
-        except queue.Empty as exc:
-            raise RuntimeError("Timed out waiting for semantic camera image") from exc
-
-        self.last_image = image
-        return image
-
     @staticmethod
     def image_to_tag_map(image: carla.Image):
         '''
         Convert CARLA semantic camera raw image to tag map.
-
-        CARLA raw_data is BGRA. The docs specify that the semantic class tag is encoded
-        in the red channel, so we read channel index 2 after reshaping.
         '''
         bgra = np.frombuffer(image.raw_data, dtype=np.uint8).reshape((image.height, image.width, 4))
         tag_map = bgra[:, :, 2].copy()
@@ -296,28 +260,17 @@ class SemanticBEVWrapper:
         }
         return layers
 
-    # def get_bev_data(self):
-        # self.world.tick()
-        # self.actor_list = self.world.get_actors()
-        # image = self._get_latest_image(timeout=20.0)
-        # tag_map = self.image_to_tag_map(image)
-        # self.last_tag_map = tag_map
-        # layers = self.tag_map_to_layers(tag_map)
-        # if self.hybrid:
-        #     layers["pedestrian"] = self.draw_actor_layers("walker")
-
-        # return layers
 
     def get_bev_data(self):
         self._ensure_sensor()
 
-        if self.latest_image is None:
+        if self.latest_raw_image is None:
             raise RuntimeError("No semantic image received yet for this pedestrian")
 
         self.actor_list = self.world.get_actors()
-        image = self.latest_image
+        image = self.latest_raw_image
         tag_map = self.image_to_tag_map(image)
-        self.last_image = image
+        self.last_used_image = image
         self.last_tag_map = tag_map
 
         layers = self.tag_map_to_layers(tag_map)
@@ -328,7 +281,9 @@ class SemanticBEVWrapper:
 
     def get_raw_tag_map(self):
         # self.world.tick()
-        image = self._get_latest_image(timeout=20.0)
+        if self.last_used_image is None:
+            return None
+        image = self.last_used_image
         tag_map = self.image_to_tag_map(image)
         self.last_tag_map = tag_map
         return tag_map
@@ -339,22 +294,22 @@ class SemanticBEVWrapper:
 
         IMPORTANT:
             - carla.Image cannot be instantiated from Python.
-            - We therefore convert self.last_image in place.
+            - We therefore convert self.last_used_image in place.
             - This is only for display. The next sensor callback will provide a fresh raw image.
         '''
-        if self.last_image is None:
+        if self.last_used_image is None:
             return None
 
         # Some CARLA versions use cityScapesPalette, some use CityScapesPalette.
         if hasattr(carla.ColorConverter, "cityScapesPalette"):
-            self.last_image.convert(carla.ColorConverter.cityScapesPalette)
+            self.last_used_image.convert(carla.ColorConverter.cityScapesPalette)
         else:
-            self.last_image.convert(carla.ColorConverter.CityScapesPalette)
+            self.last_used_image.convert(carla.ColorConverter.CityScapesPalette)
 
         bgra = np.frombuffer(
-            self.last_image.raw_data,
+            self.last_used_image.raw_data,
             dtype=np.uint8,
-        ).reshape((self.last_image.height, self.last_image.width, 4))
+        ).reshape((self.last_used_image.height, self.last_used_image.width, 4))
 
         return bgra[:, :, :3][:, :, ::-1].copy()
     
@@ -367,7 +322,7 @@ class SemanticBEVWrapper:
         
         for actor in actors:            
             # Pedestrians (Walkers) as Circles
-            if actor_type == "walker" and not None:
+            if actor_type == "walker":
                 # hero pedestrin (larger mark and lighter feature)
                 if actor.id == self.hero_actor.id:
                     color = 100
@@ -517,31 +472,52 @@ def find_pedestrian(world, test_ped):
 def semantic_bev_test(world):
     seg_wrapper = SemanticBEVWrapper(cfg=None, world=world)
     test_ped = None
-
+    last_ped_id = None
+    view_every_n_step = 5
+    step = 0
     try:
         while True:
+            world.tick()
+            step+=1
             test_ped = find_pedestrian(world, test_ped)
 
+            if (step % view_every_n_step) != 0:
+                continue
             if test_ped is None:
                 continue
 
             if not test_ped.is_alive:
                 test_ped = None
+                last_ped_id = None
+                continue
+
+            # Attach only when needed
+            if last_ped_id != test_ped.id:
+                seg_wrapper.attach_to_actor(test_ped)
+                last_ped_id = test_ped.id
+
+                # warm up the newly attached sensor
+                # for _ in range(2):
+                #     world.tick()
+
+            if seg_wrapper.latest_raw_image is None:
                 continue
 
             seg_sample = SemanticBEVSample(actor=test_ped, bev_wrapper=seg_wrapper)
+
             bev_image = seg_sample.visualize_bev()
             cv2.imshow("Semantic BEV Debug Tool", bev_image)
 
-            # The official segmantation visulization
             cityscapes_image = seg_sample.visualize_cityscapes()
             if cityscapes_image is not None:
                 cv2.imshow("Semantic Camera CityScapesPalette", cityscapes_image)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+
     finally:
         seg_wrapper.close()
+        world.tick()
         cv2.destroyAllWindows()
 
 
