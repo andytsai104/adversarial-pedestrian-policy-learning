@@ -1,20 +1,20 @@
 {
   "bc":{
     "dataset_path": "/scratch/ctsai67/datasets/pedestrian/segmentation_dataset.h5",
-    "media_dir": "media/bc/seg_bev",
-    "checkpoint_dir": "checkpoints/bc/seg_bev",
+    "media_dir": "media/bc/seg_bev/test",
+    "checkpoint_dir": "checkpoints/bc/seg_bev/test/",
     "params": {
       "batch_size": 128,
       "num_epochs": 20,
       "learning_rate": 0.0001,
-      "num_workers": 8,
+      "num_workers": 10,
       "val_size": 0.15,
       "test_size": 0.10,
       "split_seed": 42,
       "seed_list": [1, 2, 3, 4, 5],
       "epoch_smooth_window": 0.5,
       "iteration_smooth_window": 10,
-      "weight_decay": 0.0001,
+      "weight_decay": 0.0003,
       "grad_clip_norm": 1.0,
       "speed_loss_weight": 1.0,
       "direction_loss_weight": 3.0,
@@ -83,7 +83,7 @@
 
   "runtime": {
     "reproducible_mode": false,
-    "persistent_workers": true,
+    "persistent_workers": false,
     "prefetch_factor": 2
   }
 }
