@@ -41,7 +41,8 @@ class PolicyRunner:
         num_model_peds=5,
         bev_wrapper=SemanticBEVWrapper,
         bev_sampler=SemanticBEVSample,
-        evaluation=False
+        evaluation=False,
+        evaluation_seed=0,
     ):
         # --- load config ---
         self.sim_config = load_config(sim_config_name)
@@ -55,6 +56,8 @@ class PolicyRunner:
         self.goal_scale = float(self.training_config["bc"]["params"]["goal_scale"])
         self.clip_bound = float(self.training_config["bc"]["params"]["clip_bound"])
         self.num_model_peds = int(num_model_peds)
+        self.evaluation = bool(evaluation)
+        self.evaluation_seed = int(evaluation_seed)
 
         if device is None or (device == "cuda" and not torch.cuda.is_available()):
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -112,7 +115,8 @@ class PolicyRunner:
         self.peds_step = {}
         self.episode_step = 0
         self.evaluators = {}
-        self.evaluation = evaluation
+        self.completed_episode_rows = []
+        self.current_episode_id = 0
 
         # --- get stuck conditions from config ---
         stuck_detection_config = sim_cfg["stuck_detection"]
@@ -132,18 +136,11 @@ class PolicyRunner:
         }
 
     def _build_model(self, checkpoint_path: str):
-        """Build up prediction model from optimal checkpoint."""
+        input_channels = self.training_config["cnn"]["input_channels"]
         bev_feature_dim = self.training_config["cnn"]["bev_feature_dim"]
         hidden_dim = self.training_config["cnn"]["hidden_dim"]
         direction_dim = self.training_config["cnn"]["direction_dim"]
-        dropout = 0.0
-
-        if self.training_config is not None:
-            input_channels = self.training_config["cnn"]["input_channels"]
-            bev_feature_dim = self.training_config["cnn"]["bev_feature_dim"]
-            hidden_dim = self.training_config["cnn"]["hidden_dim"]
-            direction_dim = self.training_config["cnn"]["direction_dim"]
-            dropout = self.training_config["bc"]["params"]["dropout"]
+        dropout = self.training_config["bc"]["params"]["dropout"]
 
         cnn_encoder = CNNEncoder(input_channels=input_channels, feature_dim=bev_feature_dim)
         self.model = self.model_class(
@@ -169,7 +166,34 @@ class PolicyRunner:
         self.peds_step = {}
         self.episode_step = 0
 
-    def reset_episode(self):
+    def _finalize_episode_metrics(self, reason: str):
+        rows = []
+        if self.evaluation:
+            for ped_id, evaluator in self.evaluators.items():
+                row = evaluator.get_metrics(
+                    controller_name=self.model_name,
+                    seed=self.evaluation_seed,
+                    episode_id=self.current_episode_id,
+                    ped_id=ped_id,
+                )
+                row["term_reason"] = reason
+                rows.append(row)
+            self.completed_episode_rows.extend(rows)
+
+        print(
+            f"[{self.model_name} PolicyRunner] Finalized episode "
+            f"{self.current_episode_id} with {len(rows)} rows. reason={reason}"
+        )
+        self.current_episode_id += 1
+        return rows
+
+    def get_completed_rows(self):
+        return list(self.completed_episode_rows)
+
+    def reset_episode(self, finalize_reason=None):
+        if finalize_reason is not None:
+            self._finalize_episode_metrics(reason=finalize_reason)
+
         self.close_target_wrappers()
         self.close_evaluators()
         cleanup_simulation(self.world)
@@ -199,18 +223,15 @@ class PolicyRunner:
             destination.z += 1.0
 
             controller = self if model_spawned < self.num_model_peds else "ai"
-
             ped = self.crossroad_pedestrians.spawn_single_walker(
                 spawn_location=spawn_location,
                 destination=destination,
                 controller=controller,
             )
-
             if ped is None:
                 continue
 
             spawned += 1
-
             if controller is self:
                 goal = self.crossroad_pedestrians.ped_goal_loc.get(ped.id, None)
                 if goal is None:
@@ -226,13 +247,12 @@ class PolicyRunner:
 
         if len(self.target_peds) == 0:
             raise RuntimeError("Failed to spawn any model-controlled pedestrians.")
-        
+
         self.attach_target_wrappers()
         self.attach_evaluators()
 
-        if self.warmup_ticks > 0:
-            for _ in range(self.warmup_ticks):
-                self.world.tick()
+        for _ in range(self.warmup_ticks):
+            self.world.tick()
 
         self.refresh_conditions["start time"] = self.world.get_snapshot().timestamp.elapsed_seconds
         self.refresh_conditions["vehicle"]["stuck_tracker"] = {}
@@ -254,10 +274,7 @@ class PolicyRunner:
         else:
             passed_frames = frame_id - prev_frame
             dt = passed_frames * self.fixed_delta_seconds
-            if dt > 0:
-                velocity = (current_location - prev_location) / dt
-            else:
-                velocity = np.zeros(3, dtype=np.float32)
+            velocity = (current_location - prev_location) / dt if dt > 0 else np.zeros(3, dtype=np.float32)
 
         speed = float(np.linalg.norm(velocity[:2]))
         self.prev_locations[ped.id] = current_location.copy()
@@ -265,7 +282,6 @@ class PolicyRunner:
         return current_location, velocity, speed
 
     def _build_observation(self, ped: carla.Actor, frame_id: int):
-        """Build up observation for one target pedestrian."""
         if ped.id not in self.ped_wrappers:
             raise RuntimeError(f"No semantic wrapper found for ped {ped.id}")
 
@@ -315,12 +331,7 @@ class PolicyRunner:
 
         yaw_heading = math.radians(ped.get_transform().rotation.yaw)
         pred_direction_world_xy = rotate_local_to_world_2d(pred_direction_local, yaw_heading)
-
-        direction_world = np.array(
-            [pred_direction_world_xy[0], pred_direction_world_xy[1], 0.0],
-            dtype=np.float32,
-        )
-
+        direction_world = np.array([pred_direction_world_xy[0], pred_direction_world_xy[1], 0.0], dtype=np.float32)
         pred_speed = max(0.0, min(pred_speed, float(self.max_ped_speed)))
         return pred_speed, pred_direction_local, direction_world
 
@@ -339,13 +350,8 @@ class PolicyRunner:
         goal = self.target_goals.get(ped.id, None)
         if goal is None:
             return False
-
         current_loc = ped.get_location()
-        goal_loc = carla.Location(
-            x=float(goal[0]),
-            y=float(goal[1]),
-            z=float(goal[2]),
-        )
+        goal_loc = carla.Location(x=float(goal[0]), y=float(goal[1]), z=float(goal[2]))
         return current_loc.distance(goal_loc) < threshold
     
     def attach_target_wrappers(self):
@@ -372,14 +378,16 @@ class PolicyRunner:
     def close_evaluators(self):
         if self.evaluation:
             for evaluator in self.evaluators.values():
-                evaluator.destroy()
+                try:
+                    evaluator.destroy()
+                except RuntimeError:
+                    pass
             self.evaluators = {}
-
+            
     def step_once(self, render_bev=True):
         self.world.tick()
         self.episode_step += 1
 
-        # Refresh condition
         sim_state, should_refresh = refresh_sim(
             world=self.world,
             refresh_conditions=self.refresh_conditions,
@@ -388,33 +396,27 @@ class PolicyRunner:
 
         if should_refresh:
             print(f"[{self.model_name} PolicyRunner] Refresh triggered: {sim_state}")
-            self.reset_episode()
+            self.reset_episode(finalize_reason=sim_state)
             return
 
         if len(self.target_peds) == 0:
             print(f"[{self.model_name} PolicyRunner] No target pedestrians found. Resetting episode.")
-            self.reset_episode()
+            self.reset_episode(finalize_reason="no_target_pedestrians")
             return
 
         dead_peds = [ped_id for ped_id, ped in self.target_peds.items() if ped is None or not ped.is_alive]
         if len(dead_peds) > 0:
-            print(
-                f"[{self.model_name} PolicyRunner] Lost model-controlled pedestrians: "
-                f"{dead_peds}. Resetting episode."
-            )
-            self.reset_episode()
+            print(f"[{self.model_name} PolicyRunner] Lost model-controlled pedestrians: {dead_peds}. Resetting episode.")
+            self.reset_episode(finalize_reason="pedestrian_missing")
             return
 
         snapshot = self.world.get_snapshot()
         frame_id = snapshot.timestamp.frame
-
         peds_debug = defaultdict(dict)
         reached_any_goal = False
 
-        # Spawn model-controlled pedestrians
         for ped_id, ped in self.target_peds.items():
             batch, debug_state = self._build_observation(ped, frame_id)
-
             with torch.no_grad():
                 outputs = self.model(batch)
 
@@ -422,51 +424,53 @@ class PolicyRunner:
             self._apply_control(ped, pred_speed, pred_direction_world, jump=False)
             self.peds_step[ped_id] = self.peds_step.get(ped_id, 0) + 1
 
-            
             peds_debug[ped_id] = {
-                    "debug_state": debug_state,
-                    "pred_speed": pred_speed,
-                    "pred_direction_local": pred_direction_local,
-                }
+                "debug_state": debug_state,
+                "pred_speed": pred_speed,
+                "pred_direction_local": pred_direction_local,
+                "pred_direction_world": pred_direction_world,
+            }
 
             if self._target_reached(ped):
                 reached_any_goal = True
-        
+
         if self.evaluation:
-            for ped_id, evaluator in self.evaluators.items():
+            for evaluator in self.evaluators.values():
                 evaluator.update()
 
-        if peds_debug[ped_id] is not None:
-            # debug_state = peds_debug[ped_id]["debug_state"]
-            # pred_speed = peds_debug[ped_id]["pred_speed"]
-            # pred_direction_local = peds_debug[ped_id]["pred_direction_local"]
+        last_ped_id = next(reversed(peds_debug))
+        debug_info = peds_debug[last_ped_id]
+        debug_state = debug_info["debug_state"]
+        pred_speed = debug_info["pred_speed"]
+        pred_direction_local = debug_info["pred_direction_local"]
+        pred_direction_world = debug_info["pred_direction_world"]
 
-            print(
-                f"[{self.model_name}] ped_id={ped_id} | step={self.peds_step[ped_id]} "
-                f"| episode_step={self.episode_step} | frame={frame_id}\n"
-                f"  speed(state)         : {debug_state['speed']:.3f}\n"
-                f"  velocity_local       : {np.round(debug_state['velocity_local'], 3)}\n"
-                f"  pred_speed           : {pred_speed:.3f}\n"
-                f"  pred_dir_local       : {np.round(pred_direction_local, 3)}\n"
-                f"  pred_dir_world       : {np.round(pred_direction_world, 3)}\n"
-                f"  goal_rel_local       : {np.round(debug_state['goal_rel_local'], 3)}\n"
-            )
+        print(
+            f"[{self.model_name}] ped_id={last_ped_id} | step={self.peds_step[last_ped_id]} "
+            f"| episode_step={self.episode_step} | frame={frame_id}\n"
+            f"  speed(state)         : {debug_state['speed']:.3f}\n"
+            f"  velocity_local       : {np.round(debug_state['velocity_local'], 3)}\n"
+            f"  pred_speed           : {pred_speed:.3f}\n"
+            f"  pred_dir_local       : {np.round(pred_direction_local, 3)}\n"
+            f"  pred_dir_world       : {np.round(pred_direction_world, 3)}\n"
+            f"  goal_rel_local       : {np.round(debug_state['goal_rel_local'], 3)}\n"
+        )
 
-            if render_bev:
-                image = debug_state["bev_sample"].visualize_bev()
-                cv2.imshow(f"{self.model_name} Policy Runner BEV", image)
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    raise KeyboardInterrupt
+        if render_bev:
+            image = debug_state["bev_sample"].visualize_bev()
+            cv2.imshow(f"{self.model_name} Policy Runner BEV", image)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q"):
+                raise KeyboardInterrupt
 
         if reached_any_goal:
             print(f"[{self.model_name} PolicyRunner] At least one target reached its goal. Resetting episode.")
-            self.reset_episode()
+            self.reset_episode(finalize_reason="goal_reached")
             return
 
         if self.episode_step >= self.max_episode_steps:
             print(f"[{self.model_name} PolicyRunner] Max episode steps reached. Resetting episode.")
-            self.reset_episode()
+            self.reset_episode(finalize_reason="max_episode_steps")
             return
 
     def run(self, render_bev=True):

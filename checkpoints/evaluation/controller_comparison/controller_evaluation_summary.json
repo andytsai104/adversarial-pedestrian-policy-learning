@@ -1,0 +1,60 @@
+{
+    "num_rows": 60,
+    "controllers": {
+        "carla.ai.controller": {
+            "num_episodes": 20,
+            "collision_rate": 0.0,
+            "episode_length_mean": 583.9000244140625,
+            "episode_length_std": 39.6558952331543,
+            "avg_speed_mean": 0.0,
+            "avg_speed_std": 0.0,
+            "time_on_drivable_mean": 7.690000057220459,
+            "time_on_drivable_std": 5.2580084800720215,
+            "stall_steps_mean": 583.9000244140625,
+            "stall_steps_std": 39.6558952331543,
+            "min_vehicle_distance_mean": 5.801324367523193,
+            "min_vehicle_distance_std": 2.6450178623199463,
+            "steps_to_collision_mean": null,
+            "steps_to_collision_std": null
+        },
+        "bc_model": {
+            "num_episodes": 20,
+            "collision_rate": 0.0,
+            "episode_length_mean": 482.04998779296875,
+            "episode_length_std": 172.76817321777344,
+            "avg_speed_mean": 0.4814128279685974,
+            "avg_speed_std": 0.4354294538497925,
+            "time_on_drivable_mean": 0.0,
+            "time_on_drivable_std": 0.0,
+            "stall_steps_mean": 253.8000030517578,
+            "stall_steps_std": 226.09967041015625,
+            "min_vehicle_distance_mean": 10.298967361450195,
+            "min_vehicle_distance_std": 3.8038957118988037,
+            "steps_to_collision_mean": null,
+            "steps_to_collision_std": null
+        },
+        "rl_model": {
+            "num_episodes": 20,
+            "collision_rate": 0.0,
+            "episode_length_mean": 550.1500244140625,
+            "episode_length_std": 98.80044555664062,
+            "avg_speed_mean": 1.4529595375061035,
+            "avg_speed_std": 0.5797588229179382,
+            "time_on_drivable_mean": 6.440000057220459,
+            "time_on_drivable_std": 5.958263397216797,
+            "stall_steps_mean": 23.649999618530273,
+            "stall_steps_std": 66.90461730957031,
+            "min_vehicle_distance_mean": 6.330780982971191,
+            "min_vehicle_distance_std": 4.009781837463379,
+            "steps_to_collision_mean": null,
+            "steps_to_collision_std": null
+        }
+    },
+    "metadata": {
+        "num_episodes_per_controller": 20,
+        "tracked_pedestrians_per_episode": 1,
+        "bc_checkpoint_path": "checkpoints/bc/seg_bev/test5/seed_3/best_model.pt",
+        "bc_seed": 3,
+        "td3_checkpoint_path": "checkpoints/td3/test1/td3_last.pt"
+    }
+}
