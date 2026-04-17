@@ -7,12 +7,14 @@ from matplotlib import pyplot as plt
 import carla
 import cv2
 import numpy as np
-
+import torch
 from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
 from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
 from .data_utils import rotate_local_to_world_2d, rotate_world_to_local_2d
 from ..models.td3_model import TD3Agent
 from .config_loader import load_config
+from ..models.bc_model import BehaviorCloningPolicy
+from ..models.cnn_encoder import CNNEncoder
 from .sim_utils import (
     AggressiveVehicles,
     CrossroadPedestrians,
@@ -77,12 +79,14 @@ class PedestrianRLEnv:
         self.warmup_ticks = sim_cfg["warmup_ticks"]
         self.max_ped_speed = sim_cfg["pedestrian"]["speed_range"][1]
 
+        # TD3 params
         self.goal_scale = float(td3_params["goal_scale"])
         self.num_background_pedestrians = int(td3_params["num_background_pedestrians"])
         self.num_model_peds = int(td3_params.get("num_model_peds", 1))
         self.stall_speed_threshold = float(td3_params["stall_speed_threshold"])
         self.goal_reached_threshold = float(td3_params["goal_reached_threshold"])
         self.clip_bound = float(td3_params["clip_bound"])
+        self.dist_to_veh = float(td3_params["dist_to_veh"])
         self.render_bev = bool(render_bev)
         self.device = device
 
@@ -154,9 +158,17 @@ class PedestrianRLEnv:
         self.prev_frame_ids = {}
         self.prev_goal_distances = {}
         self.prev_min_vehicle_distances = {}
+        self.best_min_vehicle_distances = {}
 
         self.episode_step = 0
         self.last_obs = {}
+
+        # Circle tracker buffer
+        self.position_history = {}
+        self.circling_window = 30
+        self.circling_min_speed = 0.15
+        self.circling_min_path_length = 2.0
+        self.circling_max_net_displacement = 1.2
 
     def close_target_wrappers(self):
         for wrapper in self.ped_wrappers.values():
@@ -166,7 +178,7 @@ class PedestrianRLEnv:
     def attach_target_wrappers(self):
         self.close_target_wrappers()
         for ped_id, ped in self.target_peds.items():
-            wrapper = self.bev_wrapper_class(cfg=None, world=self.world)
+            wrapper = self.bev_wrapper_class(cfg=None, world=self.world, sensor_tick=0.1)
             wrapper.attach_to_actor(ped)
             self.ped_wrappers[ped_id] = wrapper
 
@@ -318,30 +330,90 @@ class PedestrianRLEnv:
 
         return np.array([target_speed, direction_local[0], direction_local[1]], dtype=np.float32)
 
-    def compute_reward(self, ped_id, current_location, speed, ped_location):
+    def compute_reward(self, ped_id, current_location, speed, ped_location, min_vehicle_distance):
         reward = 0.0
         reward_terms = {}
 
         goal_distance = self.get_goal_distance(ped_id, current_location)
-        min_vehicle_distance = self.get_min_vehicle_distance(ped_location)
+        # min_vehicle_distance = self.get_min_vehicle_distance(ped_location)
         on_driving_lane = self.is_on_driving_lane(ped_location)
 
-        collision = bool(self.last_collisions.get(ped_id, False))
-        if collision:
-            reward_terms["collision"] = self.reward_weight["collision"]
-            reward += reward_terms["collision"]
-        else:
-            reward_terms["collision"] = 0.0
+        # ----- collision -----
+        # collision if (collision sensor=True) or (dist<dist_to_veh) 
+        physical_collision = bool(self.last_collisions[ped_id])
+        aggressive_success = (min_vehicle_distance < self.dist_to_veh)
+        collision = (physical_collision or aggressive_success)
+        reward_terms["collision"] = self.reward_weight["collision"] if collision else 0.0
+        reward += reward_terms["collision"]
 
-        prev_min_vehicle_distance = self.prev_min_vehicle_distances.get(ped_id, None)
-        if prev_min_vehicle_distance is None:
-            approach_delta = 0.0
+        # ----- approach reward -----
+        # prev_min_vehicle_distance = self.prev_min_vehicle_distances.get(ped_id, None)
+        # if prev_min_vehicle_distance is None:
+        #     approach_delta = 0.0
+        # else:
+        #     approach_delta = max(prev_min_vehicle_distance - min_vehicle_distance, 0.0)
+
+        # delta_reward = self.reward_weight["approach_vehicle"] * float(np.clip(approach_delta, 0.0, 0.5))
+        best_min_vehicle_distance = self.best_min_vehicle_distances.get(ped_id, None)
+
+        if best_min_vehicle_distance is None:
+            improvement = 0.0
+            self.best_min_vehicle_distances[ped_id] = min_vehicle_distance
         else:
-            approach_delta = prev_min_vehicle_distance - min_vehicle_distance
-        reward_terms["approach_vehicle"] = self.reward_weight["approach_vehicle"] * float(np.clip(approach_delta, -1.0, 1.0))
+            improvement = max(best_min_vehicle_distance - min_vehicle_distance, 0.0)
+            self.best_min_vehicle_distances[ped_id] = min(best_min_vehicle_distance, min_vehicle_distance)
+
+        delta_reward = self.reward_weight["approach_vehicle"] * float(np.clip(improvement, 0.0, 0.5))
+
+        # danger zone bonus
+        zone_bonus = 0.0
+        if min_vehicle_distance < self.dist_to_veh:
+            zone_bonus = self.reward_weight["danger_zone_bonus"]
+        elif min_vehicle_distance < (self.dist_to_veh * 2):
+            zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.5
+        elif min_vehicle_distance < (self.dist_to_veh * 4):
+            zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.25
+
+        # prevent camping near cars
+        moving_for_approach = speed >= max(self.stall_speed_threshold, 0.15)
+        if moving_for_approach:
+            reward_terms["approach_vehicle"] = delta_reward + zone_bonus
+        else:
+            reward_terms["approach_vehicle"] = 0.0
+
         reward += reward_terms["approach_vehicle"]
 
-        prev_goal_distance = self.prev_goal_distances.get(ped_id, None)
+        # ----- stall -----
+        reward_terms["stall"] = self.reward_weight["stall"] if speed < self.stall_speed_threshold else 0.0
+        reward += reward_terms["stall"]
+
+        # ----- living -----
+        reward_terms["living"] = self.reward_weight["living"]
+        reward += reward_terms["living"]
+
+        # ----- lane -----
+        if on_driving_lane:
+            reward_terms["lane"] = self.reward_weight["on_driving"]
+        else:
+            reward_terms["lane"] = self.reward_weight["off_road"]
+        reward += reward_terms["lane"]
+
+        # ----- circling -----
+        circling_penalty = self.compute_circling_penalty(ped_id, current_location[:2], speed)
+        reward_terms["circling"] = circling_penalty
+        reward += circling_penalty
+
+        # if circling then no approaching reward
+        if circling_penalty < 0.0:
+            reward -= reward_terms["approach_vehicle"]
+            reward_terms["approach_vehicle"] = 0.0
+
+            reward -= reward_terms["lane"]
+            reward_terms["lane"] = 0.0
+
+        # ----- goal terms -----
+        # goal progress
+        prev_goal_distance = self.prev_goal_distances[ped_id]
         if prev_goal_distance is None:
             goal_progress = 0.0
         else:
@@ -349,28 +421,17 @@ class PedestrianRLEnv:
         reward_terms["goal_progress"] = self.reward_weight["goal_progress"] * float(np.clip(goal_progress, -1.0, 1.0))
         reward += reward_terms["goal_progress"]
 
-        if speed < self.stall_speed_threshold:
-            reward_terms["stall"] = self.reward_weight["stall"]
-            reward += reward_terms["stall"]
-        else:
-            reward_terms["stall"] = 0.0
-
-        reward_terms["living"] = self.reward_weight["living"]
-        reward += reward_terms["living"]
-
-        if on_driving_lane:
-            reward_terms["lane"] = self.reward_weight["on_driving"]
-            reward += reward_terms["lane"]
-        else:
-            reward_terms["lane"] = self.reward_weight["off_road"]
-            reward += reward_terms["lane"]
-
+        # goal reach
         goal_reached = goal_distance < self.goal_reached_threshold
         if goal_reached:
             reward_terms["goal_reached"] = self.reward_weight["goal_reached"]
             reward += reward_terms["goal_reached"]
         else:
             reward_terms["goal_reached"] = 0.0
+
+        # reward_terms["goal_progress"] = 0.0
+        # reward_terms["goal_reached"] = 0.0
+
 
         self.prev_goal_distances[ped_id] = goal_distance
         self.prev_min_vehicle_distances[ped_id] = min_vehicle_distance
@@ -379,10 +440,49 @@ class PedestrianRLEnv:
             "goal_distance": goal_distance,
             "min_vehicle_distance": min_vehicle_distance,
             "on_driving_lane": on_driving_lane,
-            "goal_reached": goal_reached,
+            "goal_reached": goal_distance < self.goal_reached_threshold,
             "collision": collision,
         }
         return reward, reward_terms, extra_state
+    
+    def compute_circling_penalty(self, ped_id, current_location, speed):
+        '''
+        Penalize pedestrians that keep moving but make little net progress,
+        which usually indicates circling or wandering in place.
+        '''
+        history = self.position_history.get(ped_id, None)
+        if history is None:
+            self.position_history[ped_id] = []
+            history = self.position_history[ped_id]
+
+        history.append(np.asarray(current_location[:2], dtype=np.float32).copy())
+
+        if len(history) > self.circling_window:
+            history.pop(0)
+
+        # not enough history yet
+        if len(history) < self.circling_window:
+            return 0.0
+
+        # only penalize if the pedestrian is actually moving
+        if speed < self.circling_min_speed:
+            return 0.0
+
+        points = np.asarray(history, dtype=np.float32)
+
+        step_diffs = points[1:] - points[:-1]
+        step_distances = np.linalg.norm(step_diffs, axis=1)
+        path_length = float(step_distances.sum())
+
+        net_displacement = float(np.linalg.norm(points[-1] - points[0]))
+
+        if (
+            path_length > self.circling_min_path_length
+            and net_displacement < self.circling_max_net_displacement
+        ):
+            return float(self.reward_weight["circling"])
+
+        return 0.0
 
     def spawn_target_and_background(self):
         self.target_peds = {}
@@ -461,6 +561,7 @@ class PedestrianRLEnv:
         self.spector.set_spector()
         self.aggressive_vehicles.aggressive_vehicles_spawn()
         self.spawn_target_and_background()
+        self.position_history = {ped_id: [] for ped_id in self.target_peds.keys()}
         self.attach_target_wrappers()
 
         if self.warmup_ticks > 0:
@@ -473,6 +574,7 @@ class PedestrianRLEnv:
         self.prev_frame_ids = {}
         self.prev_goal_distances = {}
         self.prev_min_vehicle_distances = {}
+        self.best_min_vehicle_distances = {}
         self.episode_step = 0
 
         self.attach_collision_sensors()
@@ -568,6 +670,7 @@ class PedestrianRLEnv:
                 current_location=debug_state["current_location"],
                 speed=debug_state["speed"],
                 ped_location=ped.get_location(),
+                min_vehicle_distance=debug_state["min_vehicle_distance"]
             )
 
             terminated = False
@@ -589,6 +692,13 @@ class PedestrianRLEnv:
 
             if not (terminated or truncated):
                 next_obs_dict[ped_id] = obs
+
+            # extra penlaty if not collision
+            if (terminated or truncated) and (not extra_state["collision"]):
+                reward += self.reward_weight["no_collision"]
+                reward_terms["failure_terminal"] = float(self.reward_weight["no_collision"])
+            else:
+                reward_terms["failure_terminal"] = 0.0
 
             terminated_dict[ped_id] = terminated
             truncated_dict[ped_id] = truncated
@@ -702,6 +812,8 @@ class TD3Trainer:
             "living",
             "lane",
             "goal_reached",
+            "circling",
+            "failure_terminal",
         ]
 
         for episode_idx in range(1, self.num_episodes + 1):
@@ -720,6 +832,10 @@ class TD3Trainer:
             latest_goal_distance = {}
             episode_min_vehicle_distance = float("inf")
             reward_terms_sum = {term_name: 0.0 for term_name in reward_term_names}
+
+            critic_loss_list = []
+            actor_loss_list = []
+            actor_update_count = 0
 
             while True:
                 if len(obs_dict) == 0:
@@ -792,8 +908,16 @@ class TD3Trainer:
                     num_updates = self.updates_per_step * max(len(active_ped_ids), 1)
                     for _ in range(num_updates):
                         update_info = self.agent.train_step(batch_size=self.batch_size)
-                        if update_info is not None:
-                            last_update_info = update_info
+                        if update_info is None:
+                            continue
+
+                        critic_loss_list.append(float(update_info["critic_loss"]))
+
+                        if bool(update_info.get("actor_updated", False)):
+                            actor_loss = update_info.get("actor_loss", None)
+                            if actor_loss is not None:
+                                actor_loss_list.append(float(actor_loss))
+                                actor_update_count += 1
 
                 obs_dict = next_obs_dict
                 episode_steps += 1
@@ -825,10 +949,14 @@ class TD3Trainer:
                 "reward_terms": reward_terms_sum,
             }
 
-            if last_update_info is not None:
-                episode_result["critic_loss"] = last_update_info["critic_loss"]
-                episode_result["actor_loss"] = last_update_info["actor_loss"]
-                episode_result["total_updates"] = last_update_info["total_updates"]
+            episode_result["critic_loss_mean"] = (float(np.mean(critic_loss_list)) if len(critic_loss_list) > 0 else None)
+            episode_result["critic_loss_std"] = (float(np.std(critic_loss_list)) if len(critic_loss_list) > 0 else None)
+            episode_result["actor_loss_mean"] = (float(np.mean(actor_loss_list)) if len(actor_loss_list) > 0 else None)
+            episode_result["actor_loss_std"] = (float(np.std(actor_loss_list)) if len(actor_loss_list) > 0 else None)
+            
+            episode_result["actor_update_count"] = int(actor_update_count)
+            episode_result["critic_update_count"] = int(len(critic_loss_list))
+            episode_result["total_updates"] = int(self.agent.total_updates)
 
             self.history.append(episode_result)
 
@@ -836,10 +964,10 @@ class TD3Trainer:
                 f"[TD3 Train] Episode [{episode_idx}/{self.num_episodes}] "
                 f"reward={episode_reward:.4f}, "
                 f"world_steps={episode_steps}, "
-                f"transitions={transition_count}, "
+                # f"transitions={transition_count}, "
                 f"reason={last_info.get('episode_reason', None)}, "
                 f"collision={collision_flag}, "
-                f"goal_reached={goal_reached_flag}, "
+                # f"goal_reached={goal_reached_flag}, "
                 f"buffer={len(self.agent.replay_buffer)}"
             )
 
@@ -884,6 +1012,43 @@ def build_td3_agent(training_config, max_speed, device="cuda"):
         device=str(device),
     )
     return agent
+
+
+def load_bc_weights_into_td3_actor(td3_agent: TD3Agent, bc_checkpoint_path, device="cuda"):
+    training_config = load_config("training_config.json")
+    cnn_cfg = training_config["cnn"]
+    bc_dropout = training_config["bc"]["params"]["dropout"]
+
+    bc_model = BehaviorCloningPolicy(
+        cnn_encoder=CNNEncoder(
+            input_channels=cnn_cfg["input_channels"],
+            feature_dim=cnn_cfg["bev_feature_dim"]
+        ),
+        bev_feature_dim=cnn_cfg["bev_feature_dim"],
+        hidden_dim=cnn_cfg["hidden_dim"],
+        direction_dim=cnn_cfg["direction_dim"],
+        dropout=bc_dropout,
+    ).to(device)
+
+    checkpoint = torch.load(bc_checkpoint_path, map_location=device)
+    if "model_state_dict" in checkpoint:
+        bc_model.load_state_dict(checkpoint["model_state_dict"])
+    else:
+        bc_model.load_state_dict(checkpoint)
+
+    bc_state = bc_model.state_dict()
+    actor_state = td3_agent.actor.state_dict()
+
+    matched_state = {}
+    for key, value in bc_state.items():
+        if key in actor_state and actor_state[key].shape == value.shape:
+            matched_state[key] = value
+
+    actor_state.update(matched_state)
+    td3_agent.actor.load_state_dict(actor_state)
+    td3_agent.actor_target.load_state_dict(td3_agent.actor.state_dict())
+
+    print(f"[TD3] Loaded {len(matched_state)} BC parameters into actor from: {bc_checkpoint_path}")
 
 
 # ----- plotting helpers -----
@@ -1122,14 +1287,20 @@ def plot_td3_training_results(history,
     steps = [episode.get("steps", 0) for episode in history]
 
     critic_losses = fill_missing_curve_values(
-        [episode.get("critic_loss", np.nan) for episode in history]
+        [episode.get("critic_loss_mean", np.nan) for episode in history]
     )
-    actor_losses = fill_missing_curve_values(
-        [episode.get("actor_loss", np.nan) for episode in history]
+    
+    actor_losses_raw = np.asarray(
+        [episode.get("actor_loss_mean", np.nan) for episode in history],
+        dtype=np.float32,
     )
+    actor_valid_idx = np.where(np.isfinite(actor_losses_raw))[0]
+    actor_losses = actor_losses_raw[actor_valid_idx]
+
     final_goal_distance = fill_missing_curve_values(
         [episode.get("final_goal_distance", np.nan) for episode in history]
     )
+    
     min_vehicle_distance = fill_missing_curve_values(
         [episode.get("min_vehicle_distance", np.nan) for episode in history]
     )
@@ -1138,14 +1309,17 @@ def plot_td3_training_results(history,
         [episode.get("drivable_ratio", 0.0) for episode in history],
         dtype=np.float32,
     )
+    
     stall_ratio = np.asarray(
         [episode.get("stall_ratio", 0.0) for episode in history],
         dtype=np.float32,
     )
+    
     goal_reached = np.asarray(
         [float(bool(episode.get("goal_reached", False))) for episode in history],
         dtype=np.float32,
     )
+    
     collision = np.asarray(
         [float(bool(episode.get("collision", False))) for episode in history],
         dtype=np.float32,
@@ -1255,6 +1429,8 @@ def plot_td3_training_results(history,
         "living": "Living",
         "lane": "Lane",
         "goal_reached": "Goal reached",
+        "circling": "Circling",
+        "failure_terminal": "Failure terminal",
     }
 
     reward_curves = {}

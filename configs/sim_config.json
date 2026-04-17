@@ -14,7 +14,7 @@
     },
 
     "vehicle": {
-      "veh_num": 30,
+      "veh_num": 20,
       "dist_to_intersection": 70,
       "speed_diff": 70,
       "dist_lead": 5,
@@ -24,7 +24,7 @@
     },
 
     "pedestrian":{
-      "ped_num": 45,
+      "ped_num": 25,
       "speed_range": [1.5, 2.0]
     },
 
@@ -32,22 +32,22 @@
       "time_out": 60,
       "pedestrian":{
         "dist": 25,
-        "min_pedestrians": 8
+        "min_pedestrians": 1
       },
       "vehicle":{
         "velocity_threshold": 0.1,
-        "stuck_time_limit": 5.0,
-        "stuck_count_limit": 5
+        "stuck_time_limit": 12.0,
+        "stuck_count_limit": 10
       }
     }
   
   },
 
   "bev": {
-    "size": [160, 160],
-    "range": 20,
-    "hero_ped_size": 5,
-    "other_ped_size": 4,
+    "size": [64, 64],
+    "range": 12,
+    "hero_ped_size": 2,
+    "other_ped_size": 1,
     "step_size": 0.4,
     "camera_height": 50,
     "fov": 20

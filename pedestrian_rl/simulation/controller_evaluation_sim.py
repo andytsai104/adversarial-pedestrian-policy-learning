@@ -92,7 +92,7 @@ def get_td3_checkpoint(config):
         )
 
     episode_checkpoints.sort()
-    return episode_checkpoints[-1]
+    return episode_checkpoints[-2]
 
 
 # ---------- runners ----------
@@ -148,7 +148,7 @@ def run_td3_evaluation(checkpoint_path, num_episodes, evaluation_seed=DEFAULT_TD
         sim_config_name="sim_config.json",
         training_config_name="training_config.json",
         no_rendering_mode=no_rendering_mode,
-        render_bev=False,
+        render_bev=True,
         device="cuda",
     )
     runner = TD3PolicyRunner(
@@ -203,7 +203,7 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
     bc_checkpoint_path, bc_seed, bc_joint_acc = get_best_bc_checkpoint(config)
     td3_checkpoint_path = get_td3_checkpoint(config)
 
-    print("=" * 80)
+    print("=" * 40)
     print("Controller evaluation setup")
     print(f"BC checkpoint : {bc_checkpoint_path}")
     print(f"BC best seed  : {bc_seed}")
@@ -211,30 +211,30 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
     print(f"TD3 checkpoint: {td3_checkpoint_path}")
     print(f"Episodes/controller: {num_episodes}")
     print(f"Tracked pedestrians/controller episode: {td3_num_model_peds}")
-    print("=" * 80)
+    print("=" * 40)
 
     all_rows = []
 
-    print("\n[1/3] Evaluating CARLA AI controller...")
-    ai_rows = run_ai_evaluation(
-        num_episodes=num_episodes,
-        num_model_peds=td3_num_model_peds,
-        no_rendering_mode=no_rendering_mode,
-        evaluation_seed=DEFAULT_AI_SEED,
-    )
-    all_rows.extend(ai_rows)
-    print(f"[AI] Collected {len(ai_rows)} rows.")
+    # print("\n[1/3] Evaluating CARLA AI controller...")
+    # ai_rows = run_ai_evaluation(
+    #     num_episodes=num_episodes,
+    #     num_model_peds=td3_num_model_peds,
+    #     no_rendering_mode=no_rendering_mode,
+    #     evaluation_seed=DEFAULT_AI_SEED,
+    # )
+    # all_rows.extend(ai_rows)
+    # print(f"[AI] Collected {len(ai_rows)} rows.")
 
-    print("\n[2/3] Evaluating BC controller...")
-    bc_rows = run_bc_evaluation(
-        checkpoint_path=bc_checkpoint_path,
-        bc_seed=bc_seed,
-        num_episodes=num_episodes,
-        num_model_peds=td3_num_model_peds,
-        no_rendering_mode=no_rendering_mode,
-    )
-    all_rows.extend(bc_rows)
-    print(f"[BC] Collected {len(bc_rows)} rows.")
+    # print("\n[2/3] Evaluating BC controller...")
+    # bc_rows = run_bc_evaluation(
+    #     checkpoint_path=bc_checkpoint_path,
+    #     bc_seed=bc_seed,
+    #     num_episodes=num_episodes,
+    #     num_model_peds=td3_num_model_peds,
+    #     no_rendering_mode=no_rendering_mode,
+    # )
+    # all_rows.extend(bc_rows)
+    # print(f"[BC] Collected {len(bc_rows)} rows.")
 
     print("\n[3/3] Evaluating TD3 controller...")
     td3_rows = run_td3_evaluation(

@@ -596,6 +596,7 @@ class TD3Agent:
         return {
             "critic_loss": float(critic_loss.item()),
             "actor_loss": actor_loss_value,
+            "actor_updated": (actor_loss_value is not None),
             "buffer_size": len(self.replay_buffer),
             "total_updates": self.total_updates,
         }
