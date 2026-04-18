@@ -4,6 +4,7 @@ import os
 from ..models.bc_model import BehaviorCloningPolicy
 from ..utils.config_loader import load_config
 from ..utils.eval_utils import (
+    aggregate_rows_to_episode_level,
     plot_evaluation_results,
     save_episode_results_csv,
     save_json,
@@ -225,18 +226,18 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
     # all_rows.extend(ai_rows)
     # print(f"[AI] Collected {len(ai_rows)} rows.")
 
-    # print("\n[2/3] Evaluating BC controller...")
-    # bc_rows = run_bc_evaluation(
-    #     checkpoint_path=bc_checkpoint_path,
-    #     bc_seed=bc_seed,
-    #     num_episodes=num_episodes,
-    #     num_model_peds=td3_num_model_peds,
-    #     no_rendering_mode=no_rendering_mode,
-    # )
-    # all_rows.extend(bc_rows)
-    # print(f"[BC] Collected {len(bc_rows)} rows.")
+    print("\n[1/2] Evaluating BC controller...")
+    bc_rows = run_bc_evaluation(
+        checkpoint_path=bc_checkpoint_path,
+        bc_seed=bc_seed,
+        num_episodes=num_episodes,
+        num_model_peds=td3_num_model_peds,
+        no_rendering_mode=no_rendering_mode,
+    )
+    all_rows.extend(bc_rows)
+    print(f"[BC] Collected {len(bc_rows)} rows.")
 
-    print("\n[3/3] Evaluating TD3 controller...")
+    print("\n[2/2] Evaluating TD3 controller...")
     td3_rows = run_td3_evaluation(
         checkpoint_path=td3_checkpoint_path,
         num_episodes=num_episodes,
@@ -246,12 +247,18 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
     all_rows.extend(td3_rows)
     print(f"[TD3] Collected {len(td3_rows)} rows.")
 
-    csv_path = os.path.join(eval_root, "controller_evaluation_rows.csv")
+    # Save paths
+    per_ep_csv_path = os.path.join(eval_root, "controller_evaluation_per_episode.csv")
+    per_ped_csv_path = os.path.join(eval_root, "controller_evaluation_per_ped.csv")
     summary_path = os.path.join(eval_root, "controller_evaluation_summary.json")
-    plots_dir = os.path.join(eval_root, "plots")
+    plots_path = os.path.join("media", "evaluation", "controller_comparison")
+    os.makedirs(plots_path, exist_ok=True)
 
-    save_episode_results_csv(all_rows, csv_path)
-    summary = summarize_episode_results(all_rows)
+    episode_rows = aggregate_rows_to_episode_level(all_rows)
+
+    save_episode_results_csv(all_rows, per_ped_csv_path)
+    save_episode_results_csv(episode_rows, per_ep_csv_path)
+    summary = summarize_episode_results(episode_rows)
     summary["metadata"] = {
         "num_episodes_per_controller": int(num_episodes),
         "tracked_pedestrians_per_episode": int(td3_num_model_peds),
@@ -260,12 +267,13 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
         "td3_checkpoint_path": td3_checkpoint_path,
     }
     save_json(summary, summary_path)
-    plot_evaluation_results(all_rows, plots_dir)
+    plot_evaluation_results(rows=episode_rows, save_dir=plots_path)
 
     print("\nEvaluation finished.")
-    print(f"Rows CSV : {csv_path}")
+    print(f"Per EP. CSV : {per_ep_csv_path}")
+    print(f"Per ped. CSV : {per_ped_csv_path}")
     print(f"Summary  : {summary_path}")
-    print(f"Plots    : {plots_dir}")
+    print(f"Plots    : {plots_path}")
 
     return all_rows, summary
 
