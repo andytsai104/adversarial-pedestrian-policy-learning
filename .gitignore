@@ -1,8 +1,11 @@
 .vscode/
 __pycache__/
-# datasets/
+datasets/
 notes.txt
-# checkpoints/
+
+checkpoints/
+*.pt
+
 *.pyc
 *.swp
 *.pdf
