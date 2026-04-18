@@ -87,6 +87,7 @@ class PedestrianRLEnv:
         self.goal_reached_threshold = float(td3_params["goal_reached_threshold"])
         self.clip_bound = float(td3_params["clip_bound"])
         self.dist_to_veh = float(td3_params["dist_to_veh"])
+        self.approach_veh_reward_beta = float(td3_params["approach_veh_reward_beta"])
         self.render_bev = bool(render_bev)
         self.device = device
 
@@ -340,20 +341,19 @@ class PedestrianRLEnv:
 
         # ----- collision -----
         # collision if (collision sensor=True) or (dist<dist_to_veh) 
+        collision_time_scale = 1.0 + 0.3 * (1.0 - self.episode_step / self.max_episode_steps)        # the earlier collision -> the better reward
         physical_collision = bool(self.last_collisions[ped_id])
-        aggressive_success = (min_vehicle_distance < self.dist_to_veh)
-        collision = (physical_collision or aggressive_success)
-        reward_terms["collision"] = self.reward_weight["collision"] if collision else 0.0
+        threshold_collision = (min_vehicle_distance < self.dist_to_veh)
+        near_collision = (self.dist_to_veh <= min_vehicle_distance < (self.dist_to_veh * 4))
+
+        collision = (physical_collision or threshold_collision)
+        if collision:
+            reward_terms["collision"] = self.reward_weight["collision"] * collision_time_scale
+        else:
+            reward_terms["collision"] = 0.0
         reward += reward_terms["collision"]
 
         # ----- approach reward -----
-        # prev_min_vehicle_distance = self.prev_min_vehicle_distances.get(ped_id, None)
-        # if prev_min_vehicle_distance is None:
-        #     approach_delta = 0.0
-        # else:
-        #     approach_delta = max(prev_min_vehicle_distance - min_vehicle_distance, 0.0)
-
-        # delta_reward = self.reward_weight["approach_vehicle"] * float(np.clip(approach_delta, 0.0, 0.5))
         best_min_vehicle_distance = self.best_min_vehicle_distances.get(ped_id, None)
 
         if best_min_vehicle_distance is None:
@@ -374,10 +374,15 @@ class PedestrianRLEnv:
         elif min_vehicle_distance < (self.dist_to_veh * 4):
             zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.25
 
+        # add in time -weighted approach
+        approach_time_scale = 1.0 - self.approach_veh_reward_beta * (self.episode_step / self.max_episode_steps)
+        min_scale = 1.0 - self.approach_veh_reward_beta
+        approach_time_scale = max(approach_time_scale, min_scale)
+
         # prevent camping near cars
         moving_for_approach = speed >= max(self.stall_speed_threshold, 0.15)
         if moving_for_approach:
-            reward_terms["approach_vehicle"] = delta_reward + zone_bonus
+            reward_terms["approach_vehicle"] = approach_time_scale * (delta_reward + zone_bonus)
         else:
             reward_terms["approach_vehicle"] = 0.0
 
@@ -442,6 +447,9 @@ class PedestrianRLEnv:
             "on_driving_lane": on_driving_lane,
             "goal_reached": goal_distance < self.goal_reached_threshold,
             "collision": collision,
+            "physical_collision": physical_collision,
+            "threshold_collision": threshold_collision,
+            "near_collision": near_collision,
         }
         return reward, reward_terms, extra_state
     
@@ -708,6 +716,9 @@ class PedestrianRLEnv:
                 "action": applied_action_dict.get(ped_id, None),
                 "reward_terms": reward_terms,
                 "collision": extra_state["collision"],
+                "physical_collision": extra_state["physical_collision"],
+                "threshold_collision": extra_state["threshold_collision"],
+                "near_collision": extra_state["near_collision"],
                 "goal_distance": extra_state["goal_distance"],
                 "min_vehicle_distance": extra_state["min_vehicle_distance"],
                 "on_driving_lane": extra_state["on_driving_lane"],
@@ -729,7 +740,14 @@ class PedestrianRLEnv:
         elif max_steps_reached:
             episode_reason = "max_episode_steps"
         elif len(self.active_ped_ids) == 0:
-            episode_reason = "all_pedestrians_done"
+            ended_infos = [ped_info[pid] for pid in current_active_ids if pid in ped_info]
+
+            if any(info_i.get("collision", False) for info_i in ended_infos):
+                episode_reason = "vehicle_collision"
+            elif any(info_i.get("term_reason", None) == "goal_reached" for info_i in ended_infos):
+                episode_reason = "goal_reached"
+            else:
+                episode_reason = "all_pedestrians_done"
 
         self.last_obs = next_obs_dict
 
@@ -826,6 +844,9 @@ class TD3Trainer:
             last_info = reset_info
 
             collision_flag = False
+            physical_collision_flag = False
+            threshold_collision_flag = False
+            near_collision_flag = False
             goal_reached_flag = False
             drivable_steps = 0
             stall_steps = 0
@@ -877,6 +898,15 @@ class TD3Trainer:
 
                     ped_step_info = ped_info.get(ped_id, {})
                     reward_terms = ped_step_info.get("reward_terms", {})
+
+                    if bool(ped_step_info.get("physical_collision", False)):
+                        physical_collision_flag = True
+
+                    if bool(ped_step_info.get("threshold_collision", False)):
+                        threshold_collision_flag = True
+
+                    if bool(ped_step_info.get("near_collision", False)):
+                        near_collision_flag = True
 
                     if bool(ped_step_info.get("collision", False)):
                         collision_flag = True
@@ -940,6 +970,9 @@ class TD3Trainer:
                 "truncated": bool(last_info.get("episode_reason", None) in ["max_episode_steps", "Time Out!"]),
                 "goal_reached": bool(goal_reached_flag),
                 "collision": bool(collision_flag),
+                "physical_collision": bool(physical_collision_flag),
+                "threshold_collision": bool(threshold_collision_flag),
+                "near_collision": bool(near_collision_flag),
                 "final_goal_distance": final_goal_distance,
                 "min_vehicle_distance": None if episode_min_vehicle_distance == float("inf") else float(episode_min_vehicle_distance),
                 "drivable_ratio": float(drivable_steps / max(transition_count, 1)),

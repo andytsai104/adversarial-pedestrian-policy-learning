@@ -71,11 +71,12 @@
       "loss_smooth_window": 10,
       "rate_smooth_window": 10,
       "dropout": 0.1,
-      "dist_to_veh": 2.5
+      "dist_to_veh": 2.5,
+      "approach_veh_reward_beta": 0.7
     },
     "reward": {
-    "collision": 8.0,
-    "approach_vehicle": 0.8,
+    "collision": 10.0,
+    "approach_vehicle": 0.6,
     "danger_zone_bonus": 0.3,
     "goal_progress": 0.0,
     "stall": -0.1,
