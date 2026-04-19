@@ -10,4 +10,5 @@ checkpoints/
 *.swp
 *.pdf
 *.gv
-reference_papers/
+
+paper*/

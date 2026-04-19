@@ -72,7 +72,7 @@
       "rate_smooth_window": 10,
       "dropout": 0.1,
       "dist_to_veh": 2.5,
-      "interaction_zone": 8,
+      "interaction_zone": 7,
       "approach_veh_reward_beta": 0.7
     },
     "reward": {
