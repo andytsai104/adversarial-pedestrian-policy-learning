@@ -176,7 +176,7 @@ def main():
     parser.add_argument("json_path", type=str, help="Path to td3_training_history.json")
     parser.add_argument("--outdir", type=str, default=None, help="Directory to save output plots")
     parser.add_argument("--smooth", type=int, default=9, help="Smoothing window")
-    parser.add_argument("--tick-step", type=int, default=20, help="Episode tick interval")
+    parser.add_argument("--tick-step", type=int, default=100, help="Episode tick interval")
     args = parser.parse_args()
 
     json_path = Path(args.json_path)

@@ -8,6 +8,10 @@ import carla
 import cv2
 import numpy as np
 import torch
+import sys
+import select
+import termios
+import tty
 from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
 from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
 from .data_utils import rotate_local_to_world_2d, rotate_world_to_local_2d
@@ -23,29 +27,6 @@ from .sim_utils import (
     refresh_sim,
 )
 
-# --- Environment for TD3 to train in ---
-import json
-import math
-import os
-import random
-import weakref
-from matplotlib import pyplot as plt
-import carla
-import cv2
-import numpy as np
-
-from ..data_collection.bev.bev_sample import BEVSample, BEVWrapper
-from ..data_collection.bev.bev_seg_sample import SemanticBEVSample, SemanticBEVWrapper
-from .data_utils import rotate_local_to_world_2d, rotate_world_to_local_2d
-from ..models.td3_model import TD3Agent
-from .config_loader import load_config
-from .sim_utils import (
-    AggressiveVehicles,
-    CrossroadPedestrians,
-    Spector,
-    cleanup_simulation,
-    refresh_sim,
-)
 
 
 class PedestrianRLEnv:
@@ -88,11 +69,12 @@ class PedestrianRLEnv:
         self.clip_bound = float(td3_params["clip_bound"])
         self.dist_to_veh = float(td3_params["dist_to_veh"])
         self.approach_veh_reward_beta = float(td3_params["approach_veh_reward_beta"])
-        self.render_bev = bool(render_bev)
+        self.interaction_zone = float(td3_params["interaction_zone"])
         self.device = device
 
         self.reward_weight = td3_cfg["reward"]
 
+        # --- CARLA server setup ---
         self.client = carla.Client("localhost", 2000)
         self.client.set_timeout(10.0)
         self.world = self.client.get_world()
@@ -103,7 +85,8 @@ class PedestrianRLEnv:
         settings.fixed_delta_seconds = self.fixed_delta_seconds
         settings.no_rendering_mode = no_rendering_mode
         self.world.apply_settings(settings)
-
+        
+        # --- scene setup ---
         self.intersection_position = carla.Location(
             x=sim_cfg["intersection"]["x"],
             y=sim_cfg["intersection"]["y"],
@@ -126,6 +109,8 @@ class PedestrianRLEnv:
             location=self.intersection_position,
         )
 
+
+        # --- BEV setup & refresh condition setup ---
         self.bev_wrapper_class = bev_wrapper_class
         self.bev_sample_class = bev_sample_class
 
@@ -144,6 +129,20 @@ class PedestrianRLEnv:
                 "min_peds": stuck_detection_cfg["pedestrian"]["min_pedestrians"],
             },
         }
+
+        # --- cv2 rendered BEV setup ---
+        self.render_bev = bool(render_bev)
+        self.bev_window_name = "TD3 RL BEV"
+        self.bev_window_visible = bool(render_bev)
+
+        # terminal keyboard control (Linux terminal)
+        self._stdin_fd = None
+        self._stdin_old_settings = None
+        self._keyboard_enabled = False
+
+        self._setup_keyboard_listener()
+
+
 
         # ---- per-ped buffers ----
         self.target_peds = {}
@@ -164,7 +163,7 @@ class PedestrianRLEnv:
         self.episode_step = 0
         self.last_obs = {}
 
-        # Circle tracker buffer
+        # --- Circle tracker buffer ---
         self.position_history = {}
         self.circling_window = 30
         self.circling_min_speed = 0.15
@@ -219,6 +218,7 @@ class PedestrianRLEnv:
         self.destroy_collision_sensors()
         self.close_target_wrappers()
         cv2.destroyAllWindows()
+        self._restore_keyboard_listener()
 
     @staticmethod
     def normalize_direction(direction_local, eps=1e-6):
@@ -330,7 +330,58 @@ class PedestrianRLEnv:
         ped.apply_control(control)
 
         return np.array([target_speed, direction_local[0], direction_local[1]], dtype=np.float32)
+    
+    # cv2 render BEV helper functions
+    def _setup_keyboard_listener(self):
+        """Enable non-blocking terminal key polling on Linux."""
+        try:
+            if sys.stdin.isatty():
+                self._stdin_fd = sys.stdin.fileno()
+                self._stdin_old_settings = termios.tcgetattr(self._stdin_fd)
+                tty.setcbreak(self._stdin_fd)
+                self._keyboard_enabled = True
+        except Exception as exc:
+            print(f"[PedestrianRLEnv] Keyboard listener disabled: {exc}")
+            self._keyboard_enabled = False
 
+    def _restore_keyboard_listener(self):
+        """Restore terminal settings."""
+        try:
+            if self._keyboard_enabled and self._stdin_fd is not None and self._stdin_old_settings is not None:
+                termios.tcsetattr(self._stdin_fd, termios.TCSADRAIN, self._stdin_old_settings)
+        except Exception as exc:
+            print(f"[PedestrianRLEnv] Failed to restore terminal settings: {exc}")
+
+    def _poll_keyboard_toggle(self):
+        """
+        Terminal controls:
+            q     -> hide/close BEV window only
+            space -> show BEV window again
+        """
+        if not self._keyboard_enabled:
+            return
+
+        try:
+            readable, _, _ = select.select([sys.stdin], [], [], 0)
+            if not readable:
+                return
+
+            key = sys.stdin.read(1)
+
+            if key == "q":
+                if self.bev_window_visible:
+                    self.bev_window_visible = False
+                    cv2.destroyWindow(self.bev_window_name)
+                    print("[PedestrianRLEnv] BEV window hidden. Training continues.")
+
+            elif key == " ":
+                if self.render_bev and not self.bev_window_visible:
+                    self.bev_window_visible = True
+                    print("[PedestrianRLEnv] BEV window shown again.")
+        except Exception:
+            pass
+    
+    # Reward computing funrction
     def compute_reward(self, ped_id, current_location, speed, ped_location, min_vehicle_distance):
         reward = 0.0
         reward_terms = {}
@@ -374,7 +425,7 @@ class PedestrianRLEnv:
         elif min_vehicle_distance < (self.dist_to_veh * 4):
             zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.25
 
-        # add in time -weighted approach
+        # add in time-weighted approach
         approach_time_scale = 1.0 - self.approach_veh_reward_beta * (self.episode_step / self.max_episode_steps)
         min_scale = 1.0 - self.approach_veh_reward_beta
         approach_time_scale = max(approach_time_scale, min_scale)
@@ -399,8 +450,6 @@ class PedestrianRLEnv:
         # ----- lane -----
         if on_driving_lane:
             reward_terms["lane"] = self.reward_weight["on_driving"]
-        else:
-            reward_terms["lane"] = self.reward_weight["off_road"]
         reward += reward_terms["lane"]
 
         # ----- circling -----
@@ -607,7 +656,8 @@ class PedestrianRLEnv:
             "ped_ids": list(obs_dict.keys()),
         }
         return obs_dict, info
-
+    
+    # Main pedestrainRLEnv step function
     def step(self, action_dict):
         current_active_ids = list(self.active_ped_ids)
         applied_action_dict = {}
@@ -751,12 +801,20 @@ class PedestrianRLEnv:
 
         self.last_obs = next_obs_dict
 
-        if self.render_bev and len(self.last_bev_samples) > 0:
+        # poll terminal keys every step
+        self._poll_keyboard_toggle()
+
+        if self.render_bev and self.bev_window_visible and len(self.last_bev_samples) > 0:
             first_ped_id = next(iter(self.last_bev_samples.keys()))
             image = self.last_bev_samples[first_ped_id].visualize_bev()
-            cv2.imshow("TD3 RL BEV", image)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                raise KeyboardInterrupt
+            cv2.imshow(self.bev_window_name, image)
+            cv2.waitKey(1)
+        elif not self.bev_window_visible:
+            # make sure window stays closed while training continues
+            try:
+                cv2.destroyWindow(self.bev_window_name)
+            except cv2.error:
+                pass
 
         info = {
             "episode_step": self.episode_step,

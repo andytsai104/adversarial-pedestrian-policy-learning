@@ -39,8 +39,8 @@
   },
 
   "td3": {
-    "media_dir": "media/td3/bc_fintune4",
-    "checkpoint_dir": "checkpoints/td3/bc_fintune4",
+    "media_dir": "media/td3/bc_fintune6",
+    "checkpoint_dir": "checkpoints/td3/bc_fintune6",
     "initialize_actor_from_bc": true,
     "bc_init_checkpoint": "checkpoints/bc/seg_bev/test1/seed_4/best_model.pt",
     "params": {
@@ -72,20 +72,21 @@
       "rate_smooth_window": 10,
       "dropout": 0.1,
       "dist_to_veh": 2.5,
+      "interaction_zone": 8,
       "approach_veh_reward_beta": 0.7
     },
     "reward": {
-    "collision": 10.0,
-    "approach_vehicle": 0.6,
-    "danger_zone_bonus": 0.3,
-    "goal_progress": 0.0,
-    "stall": -0.1,
-    "living": -0.02,
-    "on_driving": 0.2,
-    "off_road": 0.0,
-    "goal_reached": 0.0,
-    "circling": -2.0,
-    "no_collision": -8.0
+      "collision": 12.0,
+      "approach_vehicle": 0.15,
+      "danger_zone_bonus": 0.05,
+      "on_driving": 0.05,
+      "goal_progress": 0.0,
+      "goal_reached": 0.0,
+      "living": -0.04,
+      "leaving_vehicle": -0.10,
+      "stall": -0.12,
+      "circling": -2.5,
+      "no_collision": -10.0
     }
   },
 
