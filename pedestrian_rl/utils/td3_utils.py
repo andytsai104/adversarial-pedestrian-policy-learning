@@ -404,9 +404,22 @@ class PedestrianRLEnv:
             reward_terms["collision"] = 0.0
         reward += reward_terms["collision"]
 
-        # ----- approach reward -----
+        # ----- proximity reward -----
+        prev_min_vehicle_distance = self.prev_min_vehicle_distances.get(ped_id, None)
         best_min_vehicle_distance = self.best_min_vehicle_distances.get(ped_id, None)
 
+        moving_enough = speed >= max(self.stall_speed_threshold, 0.15)
+        in_interaction_zone = min_vehicle_distance < self.interaction_zone
+
+        # distance change relative to previous step
+        if prev_min_vehicle_distance is None:
+            distance_delta = 0.0
+            moving_away = False
+        else:
+            distance_delta = float(min_vehicle_distance - prev_min_vehicle_distance)
+            moving_away = distance_delta > 0.0
+
+        # best-so-far improvement reward
         if best_min_vehicle_distance is None:
             improvement = 0.0
             self.best_min_vehicle_distances[ped_id] = min_vehicle_distance
@@ -416,28 +429,44 @@ class PedestrianRLEnv:
 
         delta_reward = self.reward_weight["approach_vehicle"] * float(np.clip(improvement, 0.0, 0.5))
 
-        # danger zone bonus
+        # danger-zone bonus:
+        # only reward risky proximity when not moving away
         zone_bonus = 0.0
-        if min_vehicle_distance < self.dist_to_veh:
-            zone_bonus = self.reward_weight["danger_zone_bonus"]
-        elif min_vehicle_distance < (self.dist_to_veh * 2):
-            zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.5
-        elif min_vehicle_distance < (self.dist_to_veh * 4):
-            zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.25
+        if not moving_away:
+            if min_vehicle_distance < self.dist_to_veh:
+                zone_bonus = self.reward_weight["danger_zone_bonus"]
+            elif min_vehicle_distance < (self.interaction_zone / 2.0):
+                zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.5
+            elif min_vehicle_distance < self.interaction_zone:
+                zone_bonus = self.reward_weight["danger_zone_bonus"] * 0.25
 
-        # add in time-weighted approach
+        # time-weighted approach shaping (avoid camping near vehicles)
         approach_time_scale = 1.0 - self.approach_veh_reward_beta * (self.episode_step / self.max_episode_steps)
         min_scale = 1.0 - self.approach_veh_reward_beta
         approach_time_scale = max(approach_time_scale, min_scale)
 
-        # prevent camping near cars
-        moving_for_approach = speed >= max(self.stall_speed_threshold, 0.15)
-        if moving_for_approach:
-            reward_terms["approach_vehicle"] = approach_time_scale * (delta_reward + zone_bonus)
+        # positive proximity reward
+        if moving_enough:
+            approach_reward = approach_time_scale * (delta_reward + zone_bonus)
         else:
-            reward_terms["approach_vehicle"] = 0.0
+            approach_reward = 0.0
+
+        # leaving-vehicle penalty:
+        # only apply when moving away inside the interaction zone
+        if prev_min_vehicle_distance is None:
+            leave_penalty = 0.0
+        else:
+            moving_away_amount = max(distance_delta, 0.0)
+            if in_interaction_zone and moving_enough:
+                leave_penalty = self.reward_weight["leave_vehicle"] * float(np.clip(moving_away_amount, 0.0, 0.5))
+            else:
+                leave_penalty = 0.0
+
+        reward_terms["approach_vehicle"] = float(approach_reward)
+        reward_terms["leave_vehicle"] = float(leave_penalty)
 
         reward += reward_terms["approach_vehicle"]
+        reward += reward_terms["leave_vehicle"]
 
         # ----- stall -----
         reward_terms["stall"] = self.reward_weight["stall"] if speed < self.stall_speed_threshold else 0.0
