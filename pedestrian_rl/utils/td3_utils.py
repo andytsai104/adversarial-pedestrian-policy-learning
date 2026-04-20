@@ -458,15 +458,15 @@ class PedestrianRLEnv:
         else:
             moving_away_amount = max(distance_delta, 0.0)
             if in_interaction_zone and moving_enough:
-                leave_penalty = self.reward_weight["leave_vehicle"] * float(np.clip(moving_away_amount, 0.0, 0.5))
+                leave_penalty = self.reward_weight["leaving_vehicle"] * float(np.clip(moving_away_amount, 0.0, 0.5))
             else:
                 leave_penalty = 0.0
 
         reward_terms["approach_vehicle"] = float(approach_reward)
-        reward_terms["leave_vehicle"] = float(leave_penalty)
+        reward_terms["leaving_vehicle"] = float(leave_penalty)
 
         reward += reward_terms["approach_vehicle"]
-        reward += reward_terms["leave_vehicle"]
+        reward += reward_terms["leaving_vehicle"]
 
         # ----- stall -----
         reward_terms["stall"] = self.reward_weight["stall"] if speed < self.stall_speed_threshold else 0.0
@@ -479,6 +479,8 @@ class PedestrianRLEnv:
         # ----- lane -----
         if on_driving_lane:
             reward_terms["lane"] = self.reward_weight["on_driving"]
+        else:
+            reward_terms["lane"] = 0.0
         reward += reward_terms["lane"]
 
         # ----- circling -----

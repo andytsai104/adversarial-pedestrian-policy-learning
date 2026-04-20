@@ -2,7 +2,7 @@
   "simulation": {
     "town": "Town10HD",
     "fixed_delta_seconds": 0.05,
-    "max_episode_steps": 600,
+    "max_episode_steps": 1200,
     "warmup_ticks": 10,
 
     "intersection": {

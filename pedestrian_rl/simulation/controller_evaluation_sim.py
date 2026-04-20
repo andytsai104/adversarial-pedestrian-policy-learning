@@ -199,6 +199,7 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
 
     td3_num_model_peds = int(config["td3"]["params"].get("num_model_peds", 1))
     eval_root = os.path.join("checkpoints", "evaluation", "controller_comparison")
+    eval_media_dir = config["td3"]["eval_media_dir"]
     os.makedirs(eval_root, exist_ok=True)
 
     bc_checkpoint_path, bc_seed, bc_joint_acc = get_best_bc_checkpoint(config)
@@ -251,8 +252,8 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
     per_ep_csv_path = os.path.join(eval_root, "controller_evaluation_per_episode.csv")
     per_ped_csv_path = os.path.join(eval_root, "controller_evaluation_per_ped.csv")
     summary_path = os.path.join(eval_root, "controller_evaluation_summary.json")
-    plots_path = os.path.join("media", "evaluation", "controller_comparison")
-    os.makedirs(plots_path, exist_ok=True)
+    plots_path = os.path.join(eval_media_dir)
+    # os.makedirs(plots_path, exist_ok=True)
 
     episode_rows = aggregate_rows_to_episode_level(all_rows)
 
@@ -267,13 +268,13 @@ def evaluate_all_controllers(num_episodes=DEFAULT_NUM_EPISODES, no_rendering_mod
         "td3_checkpoint_path": td3_checkpoint_path,
     }
     save_json(summary, summary_path)
-    plot_evaluation_results(rows=episode_rows, save_dir=plots_path)
+    plot_evaluation_results(rows=episode_rows, save_dir=eval_media_dir)
 
     print("\nEvaluation finished.")
     print(f"Per EP. CSV : {per_ep_csv_path}")
     print(f"Per ped. CSV : {per_ped_csv_path}")
     print(f"Summary  : {summary_path}")
-    print(f"Plots    : {plots_path}")
+    print(f"Plots    : {eval_media_dir}")
 
     return all_rows, summary
 
