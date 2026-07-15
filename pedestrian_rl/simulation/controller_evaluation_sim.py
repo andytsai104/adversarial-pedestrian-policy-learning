@@ -25,8 +25,8 @@ from ..utils.td3_utils import PedestrianRLEnv, build_td3_agent
 DEFAULT_NUM_EPISODES = 50
 DEFAULT_EVALUATION_SEED = 42
 DEFAULT_NUM_MODEL_PEDS = 1
-DEFAULT_OUTPUT_ROOT = os.path.join("checkpoints", "evaluation", "bc_vs_td3_3")
-DEFAULT_PLOT_ROOT = os.path.join("media", "evaluation", "bc_vs_td3_3")
+DEFAULT_OUTPUT_ROOT = os.path.join("checkpoints", "evaluation", "bc_vs_td3")
+DEFAULT_PLOT_ROOT = os.path.join("media", "evaluation", "bc_vs_td3")
 
 
 CONTROLLER_LABELS = {
