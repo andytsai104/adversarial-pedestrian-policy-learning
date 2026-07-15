@@ -39,9 +39,10 @@
   },
 
   "td3": {
-    "media_dir": "media/td3/bc_fintune6",
-    "checkpoint_dir": "checkpoints/td3/bc_fintune6",
-    "initialize_actor_from_bc": true,
+    "media_dir": "media/td3/pureRL",
+    "checkpoint_dir": "checkpoints/td3/pureRL",
+    "eval_media_dir": "media/evaluation/pureRL",
+    "initialize_actor_from_bc": false,
     "bc_init_checkpoint": "checkpoints/bc/seg_bev/test1/seed_4/best_model.pt",
     "params": {
       "num_episodes": 2000,
@@ -71,7 +72,7 @@
       "loss_smooth_window": 10,
       "rate_smooth_window": 10,
       "dropout": 0.1,
-      "dist_to_veh": 2.5,
+      "dist_to_veh": 3.0,
       "interaction_zone": 7,
       "approach_veh_reward_beta": 0.7
     },
@@ -83,7 +84,7 @@
       "goal_progress": 0.0,
       "goal_reached": 0.0,
       "living": -0.04,
-      "leaving_vehicle": -0.10,
+      "leaving_vehicle": -0.05,
       "stall": -0.12,
       "circling": -2.5,
       "no_collision": -10.0

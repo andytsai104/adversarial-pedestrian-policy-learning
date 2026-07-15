@@ -2,7 +2,7 @@
   "simulation": {
     "town": "Town10HD",
     "fixed_delta_seconds": 0.05,
-    "max_episode_steps": 1200,
+    "max_episode_steps": 600,
     "warmup_ticks": 10,
 
     "intersection": {
@@ -15,8 +15,8 @@
 
     "vehicle": {
       "veh_num": 20,
-      "dist_to_intersection": 70,
-      "speed_diff": 70,
+      "dist_to_intersection": 30,
+      "speed_diff": 75,
       "dist_lead": 5,
       "wp_step": 10,
       "signal_ignoring_rate": 100,
