@@ -7,6 +7,7 @@ from collections import defaultdict
 
 import carla
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 
 from ..utils.config_loader import load_config
@@ -139,7 +140,7 @@ class EpisodeEvaluator:
                     if self.steps_to_threshold_collision is None:
                         self.steps_to_threshold_collision = self.episode_steps
 
-            elif self.dist_to_veh <= min_dist < (self.dist_to_veh * 4):
+            if self.dist_to_veh <= min_dist < (self.dist_to_veh * 3):
                 if not self.near_collision:
                     self.near_collision = True
                     if self.steps_to_near_collision is None:
@@ -345,19 +346,97 @@ def summarize_episode_results(rows):
 
     return summary
 
+def load_episode_results_csv(csv_path):
+    """
+    Load evaluation results from CSV and restore the original data types.
+
+    The returned rows have the same general structure as the rows passed to
+    save_episode_results_csv().
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Evaluation CSV not found: {csv_path}")
+
+    bool_fields = {
+        "collision",
+        "physical_collision",
+        "threshold_collision",
+        "near_collision",
+    }
+
+    int_fields = {
+        "seed",
+        "episode_id",
+        "ped_id",
+        "steps_to_collision",
+        "steps_to_threshold_collision",
+        "steps_to_near_collision",
+        "episode_length",
+        "drivable_steps",
+        "stall_steps",
+    }
+
+    float_fields = {
+        "avg_speed",
+        "time_on_drivable",
+        "min_vehicle_distance",
+    }
+
+    rows = []
+
+    with open(csv_path, "r", newline="") as file:
+        reader = csv.DictReader(file)
+
+        for csv_row in reader:
+            row = {}
+
+            for key, value in csv_row.items():
+                # Convert empty CSV cells back to None.
+                if value is None or value.strip() == "":
+                    row[key] = None
+                    continue
+
+                value = value.strip()
+
+                if key in bool_fields:
+                    row[key] = value.lower() in {
+                        "true",
+                        "1",
+                        "yes",
+                    }
+
+                elif key in int_fields:
+                    # ped_id may be "episode" in an aggregated CSV.
+                    if key == "ped_id" and value.lower() == "episode":
+                        row[key] = "episode"
+                    else:
+                        row[key] = int(float(value))
+
+                elif key in float_fields:
+                    row[key] = float(value)
+
+                else:
+                    # controller and any additional text fields.
+                    row[key] = value
+
+            rows.append(row)
+
+    print(f"Loaded {len(rows)} rows from: {csv_path}")
+    return rows
+
 
 # --- plotting ---
 def set_plot_style():
     plt.rcParams.update({
         "figure.dpi": 130,
         "savefig.dpi": 400,
-        "ps.fonttype": 42,
-        "font.size": 11,
-        "axes.titlesize": 13,
-        "axes.labelsize": 12,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "DejaVu Serif"],
+        "font.size": 17,
+        "axes.titlesize": 17,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 17,
+        "ytick.labelsize": 17,
+        "legend.fontsize": 15,
         "axes.linewidth": 1.0,
         "axes.facecolor": "#f4f4f4",
         "figure.facecolor": "white",
@@ -389,7 +468,29 @@ def _group_metric_values(rows, metric_name):
     return grouped
 
 
-def plot_boolean_rate(rows, metric_name, title, save_path):
+# defining ploting orders
+CONTROLLER_ORDER = [
+    "BC",
+    "Pure TD3",
+    "BC+TD3",
+]
+def ordered_controller_labels(grouped):
+    labels = [
+        controller
+        for controller in CONTROLLER_ORDER
+        if controller in grouped
+    ]
+
+    labels.extend(
+        controller
+        for controller in grouped
+        if controller not in labels
+    )
+
+    return labels
+
+
+def plot_boolean_rate(rows, metric_name, title, save_path, show_title=True):
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["controller"]].append(float(bool(row.get(metric_name, False))))
@@ -400,11 +501,20 @@ def plot_boolean_rate(rows, metric_name, title, save_path):
     set_plot_style()
     fig, ax = plt.subplots(figsize=(6.4, 4.0))
 
-    labels = list(grouped.keys())
+    labels = ordered_controller_labels(grouped)
+
+    # Include unexpected controller names at the end.
+    labels.extend(
+        controller
+        for controller in grouped
+        if controller not in labels
+    )
+
     values = [float(np.mean(grouped[label])) for label in labels]
 
     ax.bar(labels, values)
-    ax.set_title(title)
+    if show_title and title:
+        ax.set_title(title)
     ax.set_ylabel("Rate")
     ax.set_ylim(0.0, 1.0)
     ax.grid(True, axis="y")
@@ -414,12 +524,17 @@ def plot_boolean_rate(rows, metric_name, title, save_path):
     save_figure(fig, save_path)
 
 
-def plot_metric_boxplot(rows, metric_name, title, ylabel, save_path):
+def plot_metric_boxplot(rows, metric_name, title, ylabel, save_path, show_title=True):
     grouped = _group_metric_values(rows, metric_name)
     if len(grouped) == 0:
         return
 
-    labels = [label for label, values in grouped.items() if len(values) > 0]
+    labels = ordered_controller_labels(grouped)
+
+    labels.extend(controller for controller, values in grouped.items()
+        if controller not in labels and len(values) > 0
+    )
+
     data = [grouped[label] for label in labels]
 
     if len(data) == 0:
@@ -427,17 +542,44 @@ def plot_metric_boxplot(rows, metric_name, title, ylabel, save_path):
 
     set_plot_style()
     fig, ax = plt.subplots(figsize=(7.0, 4.2))
-    ax.boxplot(data, tick_labels=labels, patch_artist=False)
-    ax.set_title(title)
+    ax.boxplot(
+        data,
+        tick_labels=labels,
+        showmeans=True,
+        meanline=True,
+        medianprops={
+            "color": "tab:orange",
+            "linewidth": 1.5,
+        },
+        meanprops={
+            "color": "tab:green",
+            "linestyle": "--",
+            "linewidth": 1.5,
+        },
+    )
+    if show_title and title:
+        ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.grid(True, axis="y")
     ax.set_axisbelow(True)
+
+    # add legend in the plot
+    legend_handles = [
+        Line2D([0], [0], color="tab:orange", linewidth=1.8, linestyle="-", label="Median",),
+        Line2D([0], [0], color="tab:green", linewidth=1.8, linestyle="--", label="Mean",),
+    ]
+
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        frameon=True,
+    )
 
     fig.tight_layout()
     save_figure(fig, save_path)
 
 
-def plot_evaluation_results(rows, save_dir):
+def plot_evaluation_results(rows, save_dir, show_titles=True,):
     '''
     Create publication-friendly controller comparison plots.
     Expected input: episode-level rows from aggregate_rows_to_episode_level().
@@ -453,12 +595,14 @@ def plot_evaluation_results(rows, save_dir):
         metric_name="collision",
         title="Collision rate by controller",
         save_path=os.path.join(save_dir, "collision_rate.png"),
+        show_title=show_titles
     )
     plot_boolean_rate(
         rows=rows,
         metric_name="near_collision",
         title="Near-collision rate by controller",
         save_path=os.path.join(save_dir, "near_collision_rate.png"),
+        show_title=show_titles
     )
     plot_metric_boxplot(
         rows=rows,
@@ -466,6 +610,7 @@ def plot_evaluation_results(rows, save_dir):
         title="Minimum vehicle distance by controller",
         ylabel="Distance (m)",
         save_path=os.path.join(save_dir, "min_vehicle_distance.png"),
+        show_title=show_titles
     )
     plot_metric_boxplot(
         rows=rows,
@@ -473,6 +618,7 @@ def plot_evaluation_results(rows, save_dir):
         title="Average speed by controller",
         ylabel="Speed (m/s)",
         save_path=os.path.join(save_dir, "avg_speed.png"),
+        show_title=show_titles
     )
     plot_metric_boxplot(
         rows=rows,
@@ -480,4 +626,5 @@ def plot_evaluation_results(rows, save_dir):
         title="Episode length by controller",
         ylabel="Steps",
         save_path=os.path.join(save_dir, "episode_length.png"),
+        show_title=show_titles
     )

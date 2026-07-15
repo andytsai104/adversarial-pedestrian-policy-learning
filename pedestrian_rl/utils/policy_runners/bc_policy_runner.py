@@ -445,16 +445,16 @@ class PolicyRunner:
         pred_direction_local = debug_info["pred_direction_local"]
         pred_direction_world = debug_info["pred_direction_world"]
 
-        print(
-            f"[{self.model_name}] ped_id={last_ped_id} | step={self.peds_step[last_ped_id]} "
-            f"| episode_step={self.episode_step} | frame={frame_id}\n"
-            f"  speed(state)         : {debug_state['speed']:.3f}\n"
-            f"  velocity_local       : {np.round(debug_state['velocity_local'], 3)}\n"
-            f"  pred_speed           : {pred_speed:.3f}\n"
-            f"  pred_dir_local       : {np.round(pred_direction_local, 3)}\n"
-            f"  pred_dir_world       : {np.round(pred_direction_world, 3)}\n"
-            f"  goal_rel_local       : {np.round(debug_state['goal_rel_local'], 3)}\n"
-        )
+        # print(
+        #     f"[{self.model_name}] ped_id={last_ped_id} | step={self.peds_step[last_ped_id]} "
+        #     f"| episode_step={self.episode_step} | frame={frame_id}\n"
+        #     f"  speed(state)         : {debug_state['speed']:.3f}\n"
+        #     f"  velocity_local       : {np.round(debug_state['velocity_local'], 3)}\n"
+        #     f"  pred_speed           : {pred_speed:.3f}\n"
+        #     f"  pred_dir_local       : {np.round(pred_direction_local, 3)}\n"
+        #     f"  pred_dir_world       : {np.round(pred_direction_world, 3)}\n"
+        #     f"  goal_rel_local       : {np.round(debug_state['goal_rel_local'], 3)}\n"
+        # )
 
         if render_bev:
             image = debug_state["bev_sample"].visualize_bev()

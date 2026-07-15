@@ -32,12 +32,13 @@ def set_paper_style():
         "figure.dpi": 140,
         "savefig.dpi": 400,
         "font.family": "serif",
-        "font.size": 11,
-        "axes.titlesize": 12,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 10,
+        "font.serif": ["Times New Roman", "Times", "Nimbus Roman", "DejaVu Serif"],
+        "font.size": 17,
+        "axes.titlesize": 17,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 17,
+        "ytick.labelsize": 17,
+        "legend.fontsize": 15,
         "axes.linewidth": 0.9,
         "lines.linewidth": 2.0,
         "grid.alpha": 0.28,
@@ -177,6 +178,7 @@ def main():
     parser.add_argument("--outdir", type=str, default=None, help="Directory to save output plots")
     parser.add_argument("--smooth", type=int, default=9, help="Smoothing window")
     parser.add_argument("--tick-step", type=int, default=100, help="Episode tick interval")
+    parser.add_argument("--max-episode", type=int, default=None, help="Plot only up to this episode index (1-based). Example: 800",)
     args = parser.parse_args()
 
     json_path = Path(args.json_path)
@@ -184,6 +186,9 @@ def main():
         raise FileNotFoundError(f"Cannot find file: {json_path}")
 
     history = load_history(json_path)
+
+    if args.max_episode is not None:
+        history = history[:args.max_episode]
 
     reward = [ep.get("reward", np.nan) for ep in history]
     actor_loss = [ep.get("actor_loss_mean", np.nan) for ep in history]
